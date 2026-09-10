@@ -260,8 +260,11 @@
   .cal-nav button{background:none;border:none;font-size:20px;color:var(--pine-dark);cursor:pointer;padding:4px 10px;}
   .cal-nav h3{font-size:16px;text-transform:capitalize;}
   .cal-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:clamp(2px,1.2vw,6px);margin-bottom:16px;width:100%;}
-  .cal-weekday{text-align:center;font-size:clamp(9px,2.6vw,11px);color:var(--ink-soft);padding:2px 0 6px;font-weight:600;}
-  .cal-cell{aspect-ratio:1;display:flex;flex-direction:column;align-items:center;justify-content:center;border-radius:10px;font-size:clamp(11px,3.4vw,14px);cursor:pointer;background:var(--surface);border:1px solid transparent;gap:2px;min-width:0;}
+  .cal-weekday-row{display:flex;gap:clamp(2px,1.2vw,6px);margin-bottom:6px;}
+  .cal-weekday{flex:1;min-width:0;text-align:center;font-size:clamp(9px,2.6vw,11px);color:var(--ink-soft);padding:2px 0 6px;font-weight:600;}
+  .cal-weeks{display:flex;flex-direction:column;gap:clamp(2px,1.2vw,6px);margin-bottom:16px;}
+  .cal-week{display:flex;gap:clamp(2px,1.2vw,6px);}
+  .cal-cell{flex:1;min-width:0;aspect-ratio:1;display:flex;flex-direction:column;align-items:center;justify-content:center;border-radius:10px;font-size:clamp(11px,3.4vw,14px);cursor:pointer;background:var(--surface);border:1px solid transparent;gap:2px;}
   .cal-cell.empty{background:none;cursor:default;}
   .cal-cell.today{border-color:var(--brass);}
   .cal-cell.selected{background:var(--pine);color:#fff;}
@@ -308,12 +311,22 @@ function loadState(){
 function saveState(){ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
 
+const RAZAS_DEFECTO = [
+  'Criollo / Mestizo','Labrador Retriever','Golden Retriever','French Poodle (Caniche)',
+  'Schnauzer Miniatura','Bulldog Francés','Bulldog Inglés','Pug','Chihuahua',
+  'Yorkshire Terrier','Beagle','Cocker Spaniel','Pastor Alemán','Husky Siberiano',
+  'Pitbull','Boxer','Dálmata','Shih Tzu','Maltés','Salchicha (Dachshund)'
+];
 function migrarDatos(){
   if(!state.config) state.config = {fontSize:'md', darkMode:false};
+  if(!state.config.razas) state.config.razas = [...RAZAS_DEFECTO];
   state.clientes.forEach(c=>{
     if(!c.perros){
-      c.perros = c.perro ? [{id:uid(), nombre:c.perro, raza:'', edad:'', notas:''}] : [];
+      c.perros = c.perro ? [{id:uid(), nombre:c.perro, raza:'', fechaNacimiento:'', notas:''}] : [];
     }
+    c.perros.forEach(p=>{
+      if(p.fechaNacimiento===undefined) p.fechaNacimiento = '';
+    });
     if(!c.estado) c.estado = (c.activo===false) ? 'terminado' : 'en_proceso';
   });
 }
@@ -339,6 +352,22 @@ function clienteNombre(id){
 }
 function perrosResumen(c){
   return (c.perros&&c.perros.length) ? c.perros.map(p=>p.nombre).join(', ') : '';
+}
+function calcularEdadTexto(fechaNacIso){
+  if(!fechaNacIso) return 'Fecha de nacimiento no registrada';
+  const nac = new Date(fechaNacIso+'T00:00:00');
+  const hoy = new Date();
+  if(nac > hoy) return 'Fecha inválida';
+  let años = hoy.getFullYear() - nac.getFullYear();
+  let meses = hoy.getMonth() - nac.getMonth();
+  if(hoy.getDate() < nac.getDate()) meses--;
+  if(meses<0){ años--; meses+=12; }
+  if(años===0){
+    if(meses===0) return 'Recién nacido';
+    return `${meses} mes${meses===1?'':'es'}`;
+  }
+  if(meses===0) return `${años} año${años===1?'':'s'}`;
+  return `${años} año${años===1?'':'s'} y ${meses} mes${meses===1?'':'es'}`;
 }
 function labelEstadoCliente(e){ return {cotizando:'Cotizando', en_proceso:'En proceso', terminado:'Terminado'}[e]||e; }
 function claseCssEstadoCliente(e){ return {cotizando:'cotizando', en_proceso:'enproceso', terminado:'terminado'}[e]||''; }
@@ -404,9 +433,16 @@ function daysInMonthArr(ym){
   for(let d=1; d<=numDays; d++) cells.push(y+'-'+pad(m)+'-'+pad(d));
   return cells;
 }
+function weeksInMonth(ym){
+  const cells = daysInMonthArr(ym);
+  while(cells.length % 7 !== 0) cells.push(null);
+  const weeks = [];
+  for(let i=0;i<cells.length;i+=7) weeks.push(cells.slice(i,i+7));
+  return weeks;
+}
 function viewAgenda(){
   const hoy = todayISO();
-  const cells = daysInMonthArr(agendaMonth);
+  const weeks = weeksInMonth(agendaMonth);
   const clasesPorDia = {};
   state.clases.forEach(cl=>{ (clasesPorDia[cl.fecha] = clasesPorDia[cl.fecha]||[]).push(cl); });
 
@@ -416,21 +452,25 @@ function viewAgenda(){
     <h3>${monthLabel(agendaMonth)}</h3>
     <button data-cal-nav="1">›</button>
   </div>
-  <div class="cal-grid">
+  <div class="cal-weekday-row">
     ${['Lu','Ma','Mi','Ju','Vi','Sá','Do'].map(d=>`<div class="cal-weekday">${d}</div>`).join('')}
-    ${cells.map(iso=>{
-      if(!iso) return `<div class="cal-cell empty"></div>`;
-      const dayNum = Number(iso.slice(8,10));
-      const has = clasesPorDia[iso] && clasesPorDia[iso].length>0;
-      const cls = ['cal-cell'];
-      if(iso===hoy) cls.push('today');
-      if(iso===agendaSelDay) cls.push('selected');
-      return `<div class="${cls.join(' ')}" data-cal-day="${iso}"><span>${dayNum}</span>${has?'<span class="dot"></span>':''}</div>`;
-    }).join('')}
+  </div>
+  <div class="cal-weeks">
+    ${weeks.map(week=>`
+    <div class="cal-week">
+      ${week.map(iso=>{
+        if(!iso) return `<div class="cal-cell empty"></div>`;
+        const dayNum = Number(iso.slice(8,10));
+        const has = clasesPorDia[iso] && clasesPorDia[iso].length>0;
+        const cls = ['cal-cell'];
+        if(iso===hoy) cls.push('today');
+        if(iso===agendaSelDay) cls.push('selected');
+        return `<div class="${cls.join(' ')}" data-cal-day="${iso}"><span>${dayNum}</span>${has?'<span class="dot"></span>':''}</div>`;
+      }).join('')}
+    </div>`).join('')}
   </div>`;
 
   const claseDelDia = (clasesPorDia[agendaSelDay]||[]).sort((a,b)=>a.horaInicio.localeCompare(b.horaInicio));
-  html += `<div class="row"><div class="section-title" style="margin:0;">${fmtDateLong(agendaSelDay)}</div></div>`;
   if(claseDelDia.length===0){
     html += `<div class="empty">No hay clases este día.<br>Toca "+" para agendar una.</div>`;
   }else{
@@ -510,7 +550,10 @@ function modalNuevaClase(claseId, presetDate){
       notas: document.getElementById('f_notas').value.trim(),
     };
     if(cl){ Object.assign(cl, data); }
-    else{ state.clases.push({ id:uid(), estado:'programada', asistencia:{}, ...data }); }
+    else{
+      const estadoInicial = fecha < todayISO() ? 'completada' : 'programada';
+      state.clases.push({ id:uid(), estado:estadoInicial, ...data });
+    }
     agendaSelDay = fecha; agendaMonth = fecha.slice(0,7);
     saveState(); closeModal(); render(); toast(cl?'Clase actualizada':'Clase agendada');
   });
@@ -527,24 +570,14 @@ function modalNuevaClase(claseId, presetDate){
 function modalDetalleClase(claseId){
   const cl = state.clases.find(c=>c.id===claseId);
   if(!cl) return;
-  const asistHTML = cl.clienteIds.map(cid=>{
-    const est = cl.asistencia[cid];
-    return `<div class="attend-row">
-      <span>${clienteNombre(cid)}</span>
-      <div class="chip-row" style="margin:0;">
-        <span class="chip small ${est===true?'selected':''}" data-att="${cid}" data-val="true">Asistió</span>
-        <span class="chip small ${est===false?'selected':''}" data-att="${cid}" data-val="false">Faltó</span>
-      </div>
-    </div>`;
-  }).join('');
 
   openModal('Detalle de clase', `
     <div class="row" style="margin-bottom:10px;">
       <strong>${fmtDate(cl.fecha)} · ${cl.horaInicio}</strong>
       <span class="badge ${cl.estado}">${labelEstado(cl.estado)}</span>
     </div>
-    <div class="section-title">Asistencia</div>
-    ${asistHTML}
+    <div class="section-title">Clientes</div>
+    <div class="muted" style="margin-bottom:8px;">${cl.clienteIds.map(clienteNombre).join(', ')}</div>
     <div class="section-title">Estado de la clase</div>
     <div class="chip-row">
       <span class="chip ${cl.estado==='programada'?'selected':''}" data-est="programada">Programada</span>
@@ -560,13 +593,6 @@ function modalDetalleClase(claseId){
     </div>
   `);
 
-  document.querySelectorAll('[data-att]').forEach(el=>{
-    el.addEventListener('click', ()=>{
-      const cid = el.dataset.att, val = el.dataset.val==='true';
-      cl.asistencia[cid] = val;
-      modalDetalleClase(claseId);
-    });
-  });
   document.querySelectorAll('[data-est]').forEach(el=>{
     el.addEventListener('click', ()=>{
       document.querySelectorAll('[data-est]').forEach(x=>x.classList.remove('selected'));
@@ -653,7 +679,7 @@ function modalNuevoCliente(clienteId){
             <button class="btn ghost small" data-delperro="${p.id}">Borrar</button>
           </div>
         </div>
-        <div class="muted">${p.raza?p.raza+' · ':''}${p.edad?p.edad:''}</div>
+        <div class="muted">${p.raza?p.raza+' · ':''}${calcularEdadTexto(p.fechaNacimiento)}</div>
         ${p.notas?`<div class="muted" style="margin-top:4px;">${p.notas}</div>`:''}
       </div>`).join('') : '<div class="muted">Aún no registras perros de este cliente.</div>'}
     ` : `<p class="muted" style="margin-top:16px;">Guarda el cliente para poder agregar sus perros.</p>`}
@@ -709,26 +735,38 @@ function modalNuevoCliente(clienteId){
 function modalPerro(clienteId, perroId){
   const c = state.clientes.find(x=>x.id===clienteId);
   const p = perroId ? c.perros.find(x=>x.id===perroId) : null;
+  const razaEsPersonalizada = p && p.raza && !state.config.razas.includes(p.raza);
   openModal(p?'Editar perro':'Nuevo perro', `
     <label>Nombre del perro</label>
     <input type="text" id="pp_nombre" value="${p?p.nombre:''}" placeholder="Ej: Toby">
-    <div class="field-row">
-      <div><label>Raza</label><input type="text" id="pp_raza" value="${p?p.raza||'':''}"></div>
-      <div><label>Edad</label><input type="text" id="pp_edad" value="${p?p.edad||'':''}" placeholder="Ej: 2 años"></div>
-    </div>
+    <label>Raza</label>
+    <select id="pp_raza">
+      <option value="">Sin especificar</option>
+      ${state.config.razas.map(r=>`<option value="${r}" ${p&&p.raza===r?'selected':''}>${r}</option>`).join('')}
+      <option value="__otra__" ${razaEsPersonalizada?'selected':''}>Otra (especificar)</option>
+    </select>
+    <input type="text" id="pp_raza_otra" placeholder="Especifica la raza" style="margin-top:8px;display:${razaEsPersonalizada?'block':'none'};" value="${razaEsPersonalizada?p.raza:''}">
+    <label>Fecha de nacimiento</label>
+    <input type="date" id="pp_nacimiento" value="${p?p.fechaNacimiento||'':''}">
+    ${p&&p.fechaNacimiento? `<div class="muted" style="margin-top:6px;">Edad actual: ${calcularEdadTexto(p.fechaNacimiento)}</div>`:''}
     <label>Notas individuales del perro</label>
     <textarea id="pp_notas" rows="3" placeholder="Comportamiento, salud, avances...">${p?p.notas||'':''}</textarea>
     <div class="actions">
       <button class="btn block" id="pp_guardar">${p?'Guardar cambios':'Agregar perro'}</button>
     </div>
   `);
+  document.getElementById('pp_raza').addEventListener('change', (e)=>{
+    document.getElementById('pp_raza_otra').style.display = e.target.value==='__otra__' ? 'block':'none';
+  });
   document.getElementById('pp_guardar').addEventListener('click', ()=>{
     const nombre = document.getElementById('pp_nombre').value.trim();
     if(!nombre){ toast('El nombre del perro es obligatorio'); return; }
+    const razaSel = document.getElementById('pp_raza').value;
+    const raza = razaSel==='__otra__' ? document.getElementById('pp_raza_otra').value.trim() : razaSel;
     const data = {
       nombre,
-      raza: document.getElementById('pp_raza').value.trim(),
-      edad: document.getElementById('pp_edad').value.trim(),
+      raza,
+      fechaNacimiento: document.getElementById('pp_nacimiento').value,
       notas: document.getElementById('pp_notas').value.trim(),
     };
     if(p){ Object.assign(p, data); }
@@ -764,7 +802,7 @@ function modalFichaCliente(clienteId){
     ${(c.perros&&c.perros.length)? c.perros.map(p=>`
       <div class="perro-card">
         <strong>${p.nombre}</strong>
-        <div class="muted">${p.raza?p.raza+' · ':''}${p.edad?p.edad:''}</div>
+        <div class="muted">${p.raza?p.raza+' · ':''}${calcularEdadTexto(p.fechaNacimiento)}</div>
         ${p.notas?`<div class="muted" style="margin-top:4px;">${p.notas}</div>`:''}
       </div>`).join('') : '<div class="muted">Sin perros registrados.</div>'}
     <div class="section-title">Historial de clases (${clases.length})</div>
@@ -786,16 +824,20 @@ function modalFichaCliente(clienteId){
 }
 
 /* ================= PAGOS ================= */
+let pagosMonth = todayISO().slice(0,7);
 function viewPagos(){
-  const hoy = new Date();
-  const mesActual = hoy.getFullYear()+'-'+pad(hoy.getMonth()+1);
-  const ingresosMes = state.pagos.filter(p=>p.fecha.slice(0,7)===mesActual).reduce((s,p)=>s+Number(p.monto),0);
+  const ingresosMes = state.pagos.filter(p=>p.fecha.slice(0,7)===pagosMonth).reduce((s,p)=>s+Number(p.monto),0);
+  const pagosDelMes = state.pagos.filter(p=>p.fecha.slice(0,7)===pagosMonth).sort((a,b)=>b.fecha.localeCompare(a.fecha));
   const pendientes = state.clientes.map(c=>({c, saldo:saldoCliente(c.id)})).filter(x=>x.saldo>0).sort((a,b)=>b.saldo-a.saldo);
-  const pagosRecientes = [...state.pagos].sort((a,b)=>b.fecha.localeCompare(a.fecha)).slice(0,15);
 
   return `
+  <div class="cal-nav">
+    <button data-pagos-nav="-1">‹</button>
+    <h3>${monthLabel(pagosMonth)}</h3>
+    <button data-pagos-nav="1">›</button>
+  </div>
   <div class="card">
-    <div class="stat-label">Ingresos de este mes</div>
+    <div class="stat-label">Ingresos de ${monthLabel(pagosMonth)}</div>
     <div class="stat-num">${fmtMoney(ingresosMes)}</div>
   </div>
   <div class="section-title">Clientes con saldo pendiente</div>
@@ -803,12 +845,12 @@ function viewPagos(){
     <div class="card tap" data-open-cliente="${x.c.id}">
       <div class="row"><span>${x.c.nombre}</span><span class="saldo-pos">${fmtMoney(x.saldo)}</span></div>
     </div>`).join('') : '<div class="muted">Nadie tiene saldo pendiente.</div>'}
-  <div class="section-title">Pagos recientes</div>
-  ${pagosRecientes.length? pagosRecientes.map(p=>`
+  <div class="section-title">Pagos de ${monthLabel(pagosMonth)}</div>
+  ${pagosDelMes.length? pagosDelMes.map(p=>`
     <div class="card">
       <div class="row"><span>${clienteNombre(p.clienteId)}</span><strong>${fmtMoney(p.monto)}</strong></div>
       <div class="muted">${fmtDate(p.fecha)} · ${p.metodo}${p.concepto?' · '+p.concepto:''}</div>
-    </div>`).join('') : '<div class="empty">Aún no registras pagos.</div>'}
+    </div>`).join('') : '<div class="empty">No hay pagos registrados este mes.</div>'}
   `;
 }
 
@@ -866,24 +908,67 @@ function modalNuevoPago(pagoId, preClienteId){
 }
 
 /* ================= MÁS ================= */
+let statsMode = 'mensual';
+let statsMonth = todayISO().slice(0,7);
+let statsYear = todayISO().slice(0,4);
+let statsRangeStart = todayISO().slice(0,7);
+let statsRangeEnd = todayISO().slice(0,7);
+function shiftYear(y, delta){ return String(Number(y)+delta); }
 function viewMas(){
   const rec = [...state.recordatorios].sort((a,b)=>(a.fecha+a.hora).localeCompare(b.fecha+b.hora));
-  const hoy = new Date();
-  const mesActual = hoy.getFullYear()+'-'+pad(hoy.getMonth()+1);
-  const clasesMes = state.clases.filter(c=>c.fecha.slice(0,7)===mesActual);
-  const completadasMes = clasesMes.filter(c=>c.estado==='completada').length;
-  const canceladasMes = clasesMes.filter(c=>c.estado==='cancelada').length;
-  const ingresosMes = state.pagos.filter(p=>p.fecha.slice(0,7)===mesActual).reduce((s,p)=>s+Number(p.monto),0);
+
+  let clasesPeriodo, pagosPeriodo, periodoLabel;
+  if(statsMode==='mensual'){
+    clasesPeriodo = state.clases.filter(c=>c.fecha.slice(0,7)===statsMonth);
+    pagosPeriodo = state.pagos.filter(p=>p.fecha.slice(0,7)===statsMonth);
+    periodoLabel = monthLabel(statsMonth);
+  }else if(statsMode==='anual'){
+    clasesPeriodo = state.clases.filter(c=>c.fecha.slice(0,4)===statsYear);
+    pagosPeriodo = state.pagos.filter(p=>p.fecha.slice(0,4)===statsYear);
+    periodoLabel = statsYear;
+  }else if(statsMode==='rango'){
+    const ini = statsRangeStart<=statsRangeEnd ? statsRangeStart : statsRangeEnd;
+    const fin = statsRangeStart<=statsRangeEnd ? statsRangeEnd : statsRangeStart;
+    clasesPeriodo = state.clases.filter(c=>c.fecha.slice(0,7)>=ini && c.fecha.slice(0,7)<=fin);
+    pagosPeriodo = state.pagos.filter(p=>p.fecha.slice(0,7)>=ini && p.fecha.slice(0,7)<=fin);
+    periodoLabel = monthLabel(ini)+' – '+monthLabel(fin);
+  }else{
+    clasesPeriodo = state.clases;
+    pagosPeriodo = state.pagos;
+    periodoLabel = 'Todo el historial';
+  }
+  const completadasP = clasesPeriodo.filter(c=>c.estado==='completada').length;
+  const canceladasP = clasesPeriodo.filter(c=>c.estado==='cancelada').length;
+  const ingresosP = pagosPeriodo.reduce((s,p)=>s+Number(p.monto),0);
   const enProceso = state.clientes.filter(c=>c.estado==='en_proceso').length;
   const cfg = state.config;
 
   return `
-  <div class="section-title">Estadísticas del mes</div>
+  <div class="section-title">Estadísticas</div>
+  <div class="segmented">
+    <button data-statsmode="mensual" class="${statsMode==='mensual'?'active':''}">Mes</button>
+    <button data-statsmode="anual" class="${statsMode==='anual'?'active':''}">Año</button>
+    <button data-statsmode="rango" class="${statsMode==='rango'?'active':''}">Rango</button>
+    <button data-statsmode="historico" class="${statsMode==='historico'?'active':''}">Todo</button>
+  </div>
+  ${statsMode==='mensual'||statsMode==='anual' ? `
+  <div class="cal-nav">
+    <button data-stats-nav="-1">‹</button>
+    <h3>${periodoLabel}</h3>
+    <button data-stats-nav="1">›</button>
+  </div>` : ''}
+  ${statsMode==='rango' ? `
+  <div class="field-row" style="margin-bottom:10px;">
+    <div><label style="margin-top:0;">Desde</label><input type="month" id="stats_rango_ini" value="${statsRangeStart}"></div>
+    <div><label style="margin-top:0;">Hasta</label><input type="month" id="stats_rango_fin" value="${statsRangeEnd}"></div>
+  </div>
+  <div class="muted" style="margin-bottom:10px;">${periodoLabel}</div>` : ''}
+  ${statsMode==='historico' ? `<div class="muted" style="margin-bottom:10px;">Suma de todos los datos guardados desde que empezaste a usar la app.</div>` : ''}
   <div class="stat-grid">
-    <div class="card"><div class="stat-num">${completadasMes}</div><div class="stat-label">Clases completadas</div></div>
-    <div class="card"><div class="stat-num">${canceladasMes}</div><div class="stat-label">Clases canceladas</div></div>
-    <div class="card"><div class="stat-num">${fmtMoney(ingresosMes)}</div><div class="stat-label">Ingresos</div></div>
-    <div class="card"><div class="stat-num">${enProceso}</div><div class="stat-label">Clientes en proceso</div></div>
+    <div class="card"><div class="stat-num">${completadasP}</div><div class="stat-label">Clases completadas</div></div>
+    <div class="card"><div class="stat-num">${canceladasP}</div><div class="stat-label">Clases canceladas</div></div>
+    <div class="card"><div class="stat-num">${fmtMoney(ingresosP)}</div><div class="stat-label">Ingresos</div></div>
+    <div class="card"><div class="stat-num">${enProceso}</div><div class="stat-label">Clientes en proceso (actual)</div></div>
   </div>
 
   <div class="row" style="margin-top:22px;">
@@ -898,6 +983,18 @@ function viewMas(){
       </div>
       <div class="muted">${fmtDate(r.fecha)}${r.hora?' · '+r.hora:''}</div>
     </div>`).join('') : '<div class="muted">Sin recordatorios pendientes.</div>'}
+
+  <div class="section-title" style="margin-top:22px;">Razas de perros</div>
+  <div class="card">
+    <p class="muted" style="margin:0 0 10px;">Aparecen como opciones al registrar el perro de un cliente.</p>
+    <div class="chip-row" id="razas_list">
+      ${state.config.razas.map(r=>`<span class="chip" data-raza-del="${r}">${r} ✕</span>`).join('')}
+    </div>
+    <div class="field-row" style="margin-top:10px;">
+      <input type="text" id="raza_nueva" placeholder="Nueva raza">
+      <button class="btn small" id="raza_add" style="flex:0 0 auto;">Agregar</button>
+    </div>
+  </div>
 
   <div class="section-title" style="margin-top:22px;">Apariencia</div>
   <div class="card">
@@ -923,7 +1020,7 @@ function viewMas(){
     </div>
     <input type="file" id="m_importFile" accept="application/json" style="display:none;">
   </div>
-  <div class="muted" style="text-align:center;margin-top:18px;">Adiestra · versión 1.1</div>
+  <div class="muted" style="text-align:center;margin-top:18px;">Adiestra · versión 1.2</div>
   `;
 }
 
@@ -976,6 +1073,42 @@ function attachViewHandlers(){
   });
   document.querySelectorAll('[data-cal-nav]').forEach(el=>{
     el.addEventListener('click', ()=>{ agendaMonth = shiftMonth(agendaMonth, Number(el.dataset.calNav)); render(); });
+  });
+  document.querySelectorAll('[data-pagos-nav]').forEach(el=>{
+    el.addEventListener('click', ()=>{ pagosMonth = shiftMonth(pagosMonth, Number(el.dataset.pagosNav)); render(); });
+  });
+  document.querySelectorAll('[data-statsmode]').forEach(el=>{
+    el.addEventListener('click', ()=>{ statsMode = el.dataset.statsmode; render(); });
+  });
+  document.querySelectorAll('[data-stats-nav]').forEach(el=>{
+    el.addEventListener('click', ()=>{
+      const dir = Number(el.dataset.statsNav);
+      if(statsMode==='mensual') statsMonth = shiftMonth(statsMonth, dir);
+      else statsYear = shiftYear(statsYear, dir);
+      render();
+    });
+  });
+  const statsIni = document.getElementById('stats_rango_ini');
+  const statsFin = document.getElementById('stats_rango_fin');
+  if(statsIni) statsIni.addEventListener('change', ()=>{ statsRangeStart = statsIni.value; render(); });
+  if(statsFin) statsFin.addEventListener('change', ()=>{ statsRangeEnd = statsFin.value; render();
+  });
+  document.querySelectorAll('[data-raza-del]').forEach(el=>{
+    el.addEventListener('click', ()=>{
+      if(confirm('¿Quitar "'+el.dataset.razaDel+'" de la lista de razas?')){
+        state.config.razas = state.config.razas.filter(r=>r!==el.dataset.razaDel);
+        saveState(); render();
+      }
+    });
+  });
+  const razaAdd = document.getElementById('raza_add');
+  if(razaAdd) razaAdd.addEventListener('click', ()=>{
+    const input = document.getElementById('raza_nueva');
+    const val = input.value.trim();
+    if(!val){ toast('Escribe el nombre de la raza'); return; }
+    if(state.config.razas.includes(val)){ toast('Esa raza ya está en la lista'); return; }
+    state.config.razas.push(val);
+    saveState(); render(); toast('Raza agregada');
   });
   document.querySelectorAll('[data-cal-day]').forEach(el=>{
     el.addEventListener('click', ()=>{ agendaSelDay = el.dataset.calDay; render(); });
