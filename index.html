@@ -932,7 +932,7 @@ function modalFichaCliente(clienteId){
       </div>`).join('') : '<div class="muted">Sin perros registrados.</div>'}
     <div class="section-title">Historial de clases (${clases.length})</div>
     ${clases.length? clases.slice(0,8).map(cl=>`
-      <div class="card compact">
+      <div class="card compact tap" data-open-clase-ficha="${cl.id}">
         <div class="row"><span>${fmtDate(cl.fecha)} · ${cl.horaInicio}</span><span class="badge ${cl.estado}">${labelEstado(cl.estado)}</span></div>
       </div>`).join('') : '<div class="muted">Sin clases registradas.</div>'}
     <div class="section-title">Pagos (${pagos.length})</div>
@@ -946,6 +946,9 @@ function modalFichaCliente(clienteId){
   `);
   document.getElementById('fc_editar').addEventListener('click', ()=>modalNuevoCliente(clienteId));
   document.getElementById('fc_pago').addEventListener('click', ()=>modalNuevoPago(null, clienteId));
+  document.querySelectorAll('[data-open-clase-ficha]').forEach(el=>{
+    el.addEventListener('click', ()=>modalDetalleClase(el.dataset.openClaseFicha));
+  });
   const wa = document.getElementById('fc_whatsapp');
   if(wa) wa.addEventListener('click', ()=>{
     const numero = telefonoWhatsApp(c.telefono);
@@ -1159,7 +1162,7 @@ function viewMas(){
     <p class="muted" style="margin:0 0 12px;">Revisa si hay una versión más nueva publicada y actualiza la app sin perder tus datos.</p>
     <button class="btn secondary small" id="m_checkUpdate">Buscar actualización</button>
   </div>
-  <div class="muted" style="text-align:center;margin-top:18px;">Adiestra · versión 1.6</div>
+  <div class="muted" style="text-align:center;margin-top:18px;">Adiestra · versión 1.7</div>
   `;
 }
 
@@ -1189,6 +1192,8 @@ function modalNuevoRecordatorio(){
 }
 
 /* ---------- Modal genérico ---------- */
+let modalHistoryPushed = false;
+let awayFromAgenda = false;
 function openModal(title, bodyHTML){
   document.getElementById('modalRoot').innerHTML = `
     <div class="overlay" id="overlay">
@@ -1199,8 +1204,39 @@ function openModal(title, bodyHTML){
     </div>`;
   document.getElementById('overlay').addEventListener('click', e=>{ if(e.target.id==='overlay') closeModal(); });
   document.getElementById('closeModalBtn').addEventListener('click', closeModal);
+  if(!modalHistoryPushed){
+    history.pushState({tab:currentTab, modal:true}, '');
+    modalHistoryPushed = true;
+  }
 }
-function closeModal(){ document.getElementById('modalRoot').innerHTML=''; }
+function closeModalUI(){
+  document.getElementById('modalRoot').innerHTML = '';
+  modalHistoryPushed = false;
+}
+function closeModal(){
+  if(modalHistoryPushed){ history.back(); }
+  else { closeModalUI(); }
+}
+function goToTab(tab){
+  if(tab==='agenda'){
+    if(awayFromAgenda){ history.replaceState({tab:'agenda'}, ''); awayFromAgenda=false; }
+  }else{
+    if(!awayFromAgenda){ history.pushState({tab}, ''); awayFromAgenda=true; }
+    else{ history.replaceState({tab}, ''); }
+  }
+  currentTab = tab;
+  render();
+}
+window.addEventListener('popstate', (e)=>{
+  const s = e.state || {tab:'agenda'};
+  const modalRoot = document.getElementById('modalRoot');
+  if(modalRoot && modalRoot.innerHTML.trim() !== ''){
+    closeModalUI();
+  }
+  awayFromAgenda = !!(s.tab && s.tab!=='agenda');
+  currentTab = s.tab || 'agenda';
+  render();
+});
 
 /* ---------- Handlers por vista ---------- */
 function initSwipeToDelete(){
@@ -1391,7 +1427,7 @@ function attachViewHandlers(){
 
 /* ---------- Navegación y FAB ---------- */
 document.querySelectorAll('nav.tabbar button').forEach(b=>{
-  b.addEventListener('click', ()=>{ currentTab = b.dataset.tab; render(); });
+  b.addEventListener('click', ()=>{ goToTab(b.dataset.tab); });
 });
 document.getElementById('fab').addEventListener('click', ()=>{
   if(currentTab==='agenda') modalNuevaClase(null, agendaSelDay);
@@ -1399,6 +1435,7 @@ document.getElementById('fab').addEventListener('click', ()=>{
   if(currentTab==='pagos') modalNuevoPago(null, null);
 });
 
+history.replaceState({tab:'agenda'}, '');
 migrarDatos();
 applyConfig();
 render();
