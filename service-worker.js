@@ -1,4 +1,4 @@
-const CACHE_NAME = 'adiestra-cache-v8';
+const CACHE_NAME = 'adiestra-cache-v10';
 const ASSETS = [
   './index.html',
   './manifest.json',

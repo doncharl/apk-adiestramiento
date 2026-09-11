@@ -270,6 +270,9 @@
   .cal-cell .dot{width:5px;height:5px;border-radius:50%;background:var(--brass);}
   .cal-cell.selected .dot{background:#fff;}
   .perro-card{background:var(--surface-2);border-radius:var(--radius-sm);padding:10px 12px;margin-bottom:8px;}
+  .swipe-wrap{position:relative;overflow:hidden;border-radius:var(--radius);margin-bottom:10px;}
+  .swipe-actions{position:absolute;top:0;right:0;bottom:0;width:84px;display:flex;align-items:center;justify-content:center;background:var(--brick);color:#fff;font-size:13px;font-weight:600;cursor:pointer;}
+  .swipe-content{position:relative;background:var(--surface);transition:transform .18s ease;touch-action:pan-y;}
   .switchish{display:flex;gap:0;}
 </style>
 </head>
@@ -974,9 +977,12 @@ function viewPagos(){
     </div>`).join('') : '<div class="muted">Nadie tiene saldo pendiente.</div>'}
   <div class="section-title">Pagos de ${monthLabel(pagosMonth)}</div>
   ${pagosDelMes.length? pagosDelMes.map(p=>`
-    <div class="card">
-      <div class="row"><span>${clienteNombre(p.clienteId)}</span><strong>${fmtMoney(p.monto)}</strong></div>
-      <div class="muted">${fmtDate(p.fecha)} · ${p.metodo}${p.concepto?' · '+p.concepto:''}</div>
+    <div class="swipe-wrap">
+      <div class="swipe-actions" data-swipe-del="${p.id}">Eliminar</div>
+      <div class="swipe-content card" data-swipe-id="${p.id}" style="margin-bottom:0;">
+        <div class="row"><span>${clienteNombre(p.clienteId)}</span><strong>${fmtMoney(p.monto)}</strong></div>
+        <div class="muted">${fmtDate(p.fecha)} · ${p.metodo}${p.concepto?' · '+p.concepto:''}</div>
+      </div>
     </div>`).join('') : '<div class="empty">No hay pagos registrados este mes.</div>'}
   `;
 }
@@ -1153,7 +1159,7 @@ function viewMas(){
     <p class="muted" style="margin:0 0 12px;">Revisa si hay una versión más nueva publicada y actualiza la app sin perder tus datos.</p>
     <button class="btn secondary small" id="m_checkUpdate">Buscar actualización</button>
   </div>
-  <div class="muted" style="text-align:center;margin-top:18px;">Adiestra · versión 1.4</div>
+  <div class="muted" style="text-align:center;margin-top:18px;">Adiestra · versión 1.6</div>
   `;
 }
 
@@ -1197,6 +1203,52 @@ function openModal(title, bodyHTML){
 function closeModal(){ document.getElementById('modalRoot').innerHTML=''; }
 
 /* ---------- Handlers por vista ---------- */
+function initSwipeToDelete(){
+  const OPEN_X = -84;
+  document.querySelectorAll('.swipe-content').forEach(el=>{
+    let startX=0, startY=0, currentX=0, dragging=false, open=false, locked=null;
+    el.addEventListener('pointerdown', e=>{
+      dragging = true; startX = e.clientX; startY = e.clientY; locked=null;
+      el.style.transition='none';
+      try{ el.setPointerCapture(e.pointerId); }catch(err){}
+    });
+    el.addEventListener('pointermove', e=>{
+      if(!dragging) return;
+      const dxRaw = e.clientX - startX;
+      const dyRaw = e.clientY - startY;
+      if(locked===null && (Math.abs(dxRaw)>6 || Math.abs(dyRaw)>6)){
+        locked = Math.abs(dxRaw) > Math.abs(dyRaw) ? 'x' : 'y';
+      }
+      if(locked==='y'){ return; }
+      if(locked==='x'){
+        let dx = dxRaw + (open?OPEN_X:0);
+        dx = Math.min(0, Math.max(OPEN_X, dx));
+        currentX = dx;
+        el.style.transform = `translateX(${dx}px)`;
+      }
+    });
+    function endDrag(){
+      if(!dragging) return;
+      dragging=false;
+      el.style.transition='transform .18s ease';
+      if(locked==='x'){
+        if(currentX < OPEN_X/2){ el.style.transform = `translateX(${OPEN_X}px)`; open=true; }
+        else { el.style.transform = 'translateX(0)'; open=false; }
+      }
+    }
+    el.addEventListener('pointerup', endDrag);
+    el.addEventListener('pointercancel', endDrag);
+  });
+  document.querySelectorAll('[data-swipe-del]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const id = btn.dataset.swipeDel;
+      if(confirm('¿Eliminar este pago del historial?')){
+        state.pagos = state.pagos.filter(p=>p.id!==id);
+        saveState(); render(); toast('Pago eliminado');
+      }
+    });
+  });
+}
 function attachViewHandlers(){
   document.querySelectorAll('[data-open-clase]').forEach(el=>{
     el.addEventListener('click', ()=>modalDetalleClase(el.dataset.openClase));
@@ -1316,24 +1368,25 @@ function attachViewHandlers(){
 
   const checkUpdate = document.getElementById('m_checkUpdate');
   if(checkUpdate) checkUpdate.addEventListener('click', async ()=>{
-    if(!('serviceWorker' in navigator)){ toast('Este navegador no soporta actualizaciones automáticas'); return; }
+    toast('Buscando actualización...');
     try{
-      toast('Buscando actualización...');
-      const reg = await navigator.serviceWorker.getRegistration();
-      if(!reg){ toast('No se pudo conectar con el servicio de actualización'); return; }
-      await reg.update();
+      if('caches' in window){
+        const keys = await caches.keys();
+        await Promise.all(keys.map(k=>caches.delete(k)));
+      }
+      if('serviceWorker' in navigator){
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map(r=>r.unregister()));
+      }
       setTimeout(()=>{
-        if(reg.waiting || reg.installing){
-          toast('Actualización encontrada, aplicando...');
-          setTimeout(()=>location.reload(), 1200);
-        }else{
-          toast('Ya tienes la última versión');
-        }
-      }, 1200);
+        const base = window.location.origin + window.location.pathname;
+        window.location.href = base + '?_=' + Date.now();
+      }, 400);
     }catch(e){
-      toast('No se pudo revisar. Verifica tu conexión a internet.');
+      toast('No se pudo actualizar. Verifica tu conexión a internet.');
     }
   });
+  initSwipeToDelete();
 }
 
 /* ---------- Navegación y FAB ---------- */
