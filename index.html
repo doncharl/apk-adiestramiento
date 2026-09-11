@@ -316,6 +316,9 @@ const RAZAS_DEFECTO = [
   'Yorkshire Terrier','Beagle','Cocker Spaniel','Pastor Alemán','Husky Siberiano',
   'Pitbull','Boxer','Dálmata','Shih Tzu','Maltés','Salchicha (Dachshund)'
 ];
+const HABILIDADES_DEFECTO = [
+  'Sentado','Quieto','Llamado','Caminar sin jalar','Acostado','No saltar sobre personas'
+];
 function migrarDatos(){
   if(!state.config) state.config = {fontSize:'md', darkMode:false};
   if(!state.config.razas) state.config.razas = [...RAZAS_DEFECTO];
@@ -325,6 +328,8 @@ function migrarDatos(){
     }
     c.perros.forEach(p=>{
       if(p.fechaNacimiento===undefined) p.fechaNacimiento = '';
+      if(p.fechaVacuna===undefined) p.fechaVacuna = '';
+      if(!p.habilidades) p.habilidades = HABILIDADES_DEFECTO.map(n=>({id:uid(), nombre:n, estado:'por_trabajar'}));
     });
     if(!c.estado) c.estado = (c.activo===false) ? 'terminado' : 'en_proceso';
   });
@@ -367,6 +372,30 @@ function calcularEdadTexto(fechaNacIso){
   }
   if(meses===0) return `${años} año${años===1?'':'s'}`;
   return `${años} año${años===1?'':'s'} y ${meses} mes${meses===1?'':'es'}`;
+}
+function addDias(iso, dias){
+  const d = new Date(iso+'T00:00:00');
+  d.setDate(d.getDate()+dias);
+  return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate());
+}
+function estadoVacuna(fechaVacuna){
+  if(!fechaVacuna) return null;
+  const proximaISO = addDias(fechaVacuna, 365);
+  const hoy = todayISO();
+  const diffDias = Math.round((new Date(proximaISO+'T00:00:00') - new Date(hoy+'T00:00:00'))/(1000*60*60*24));
+  let nivel = 'ok';
+  if(diffDias<0) nivel='vencida'; else if(diffDias<=30) nivel='pronto';
+  return { proximaISO, diffDias, nivel };
+}
+function resumenHabilidades(p){
+  if(!p.habilidades || !p.habilidades.length) return '';
+  const logrados = p.habilidades.filter(h=>h.estado==='logrado').length;
+  return `${logrados}/${p.habilidades.length} comandos logrados`;
+}
+function telefonoWhatsApp(tel){
+  let limpio = (tel||'').replace(/[^\d]/g,'');
+  if(limpio.length===10) limpio = '57'+limpio;
+  return limpio;
 }
 function labelEstadoCliente(e){ return {cotizando:'Cotizando', en_proceso:'En proceso', terminado:'Terminado'}[e]||e; }
 function claseCssEstadoCliente(e){ return {cotizando:'cotizando', en_proceso:'enproceso', terminado:'terminado'}[e]||''; }
@@ -517,6 +546,12 @@ function modalNuevaClase(claseId, presetDate){
     <input type="number" id="f_precio" placeholder="0" value="${cl?cl.precio||'':''}">
     <label>Notas de la clase</label>
     <textarea id="f_notas" rows="2" placeholder="Opcional">${cl?cl.notas||'':''}</textarea>
+    ${!cl ? `
+    <label>Repetir semanalmente</label>
+    <div class="field-row">
+      <div><input type="number" id="f_repetir" min="1" max="52" value="1"></div>
+      <div class="muted" style="align-self:center;">semanas en total (1 = no repetir)</div>
+    </div>` : ''}
     <div class="actions">
       <button class="btn block" id="f_guardar">${cl?'Guardar cambios':'Agendar clase'}</button>
       ${cl? '<button class="btn secondary block" id="f_borrar">Eliminar clase</button>':''}
@@ -548,11 +583,15 @@ function modalNuevaClase(claseId, presetDate){
     };
     if(cl){ Object.assign(cl, data); }
     else{
-      const estadoInicial = fecha < todayISO() ? 'completada' : 'programada';
-      state.clases.push({ id:uid(), estado:estadoInicial, ...data });
+      const repetir = Math.max(1, Number(document.getElementById('f_repetir')?.value)||1);
+      for(let i=0;i<repetir;i++){
+        const fechaClase = i===0 ? fecha : addDias(fecha, i*7);
+        const estadoInicial = fechaClase < todayISO() ? 'completada' : 'programada';
+        state.clases.push({ id:uid(), estado:estadoInicial, ...data, fecha:fechaClase });
+      }
     }
     agendaSelDay = fecha; agendaMonth = fecha.slice(0,7);
-    saveState(); closeModal(); render(); toast(cl?'Clase actualizada':'Clase agendada');
+    saveState(); closeModal(); render(); toast(cl?'Clase actualizada':(document.getElementById('f_repetir')&&Number(document.getElementById('f_repetir').value)>1 ? 'Clases agendadas' : 'Clase agendada'));
   });
   if(cl){
     document.getElementById('f_borrar').addEventListener('click', ()=>{
@@ -677,6 +716,8 @@ function modalNuevoCliente(clienteId){
           </div>
         </div>
         <div class="muted">${p.raza?p.raza+' · ':''}${calcularEdadTexto(p.fechaNacimiento)}</div>
+        ${(()=>{ const v=estadoVacuna(p.fechaVacuna); if(!v) return ''; const color=v.nivel==='vencida'?'var(--brick)':v.nivel==='pronto'?'var(--brass)':'var(--ink-soft)'; const txt=v.nivel==='vencida'?'Vacuna vencida':v.nivel==='pronto'?'Vacuna vence pronto':'Vacuna al día'; return `<div style="font-size:12px;color:${color};margin-top:2px;">${txt} (${fmtDate(v.proximaISO)})</div>`; })()}
+        ${resumenHabilidades(p)?`<div class="muted" style="margin-top:2px;">${resumenHabilidades(p)}</div>`:''}
         ${p.notas?`<div class="muted" style="margin-top:4px;">${p.notas}</div>`:''}
       </div>`).join('') : '<div class="muted">Aún no registras perros de este cliente.</div>'}
     ` : `<p class="muted" style="margin-top:16px;">Guarda el cliente para poder agregar sus perros.</p>`}
@@ -746,8 +787,30 @@ function modalPerro(clienteId, perroId){
     <label>Fecha de nacimiento</label>
     <input type="date" id="pp_nacimiento" value="${p?p.fechaNacimiento||'':''}">
     ${p&&p.fechaNacimiento? `<div class="muted" style="margin-top:6px;">Edad actual: ${calcularEdadTexto(p.fechaNacimiento)}</div>`:''}
+    <label>Fecha de última vacuna (opcional)</label>
+    <input type="date" id="pp_vacuna" value="${p?p.fechaVacuna||'':''}">
+    ${p&&p.fechaVacuna? (()=>{ const v=estadoVacuna(p.fechaVacuna); const txt = v.nivel==='vencida' ? `Vacuna vencida desde ${fmtDate(v.proximaISO)}` : v.nivel==='pronto' ? `Vacuna vence pronto: ${fmtDate(v.proximaISO)}` : `Próxima vacuna: ${fmtDate(v.proximaISO)}`; const color = v.nivel==='vencida'?'var(--brick)':v.nivel==='pronto'?'var(--brass)':'var(--ink-soft)'; return `<div style="margin-top:6px;font-size:13px;color:${color};">${txt}</div>`; })() : ''}
     <label>Notas individuales del perro</label>
     <textarea id="pp_notas" rows="3" placeholder="Comportamiento, salud, avances...">${p?p.notas||'':''}</textarea>
+    ${p ? `
+    <div class="row" style="margin-top:16px;">
+      <div class="section-title" style="margin:0;">Progreso de entrenamiento ${resumenHabilidades(p)?'· '+resumenHabilidades(p):''}</div>
+    </div>
+    ${(p.habilidades||[]).map(h=>`
+      <div class="row" style="padding:7px 0;border-bottom:1px solid var(--line);">
+        <span>${h.nombre}</span>
+        <div style="display:flex;gap:6px;align-items:center;">
+          <span class="chip small ${h.estado==='por_trabajar'?'selected':''}" data-hab="${h.id}" data-val="por_trabajar" style="padding:4px 9px;font-size:11px;">Por trabajar</span>
+          <span class="chip small ${h.estado==='en_progreso'?'selected':''}" data-hab="${h.id}" data-val="en_progreso" style="padding:4px 9px;font-size:11px;">En progreso</span>
+          <span class="chip small ${h.estado==='logrado'?'selected':''}" data-hab="${h.id}" data-val="logrado" style="padding:4px 9px;font-size:11px;">Logrado</span>
+          <button class="close-x" data-delhab="${h.id}" style="padding:2px 4px;">✕</button>
+        </div>
+      </div>`).join('')}
+    <div class="row" style="gap:8px;margin-top:10px;">
+      <input type="text" id="pp_nuevahab" placeholder="Nuevo comando o habilidad..." style="flex:1;">
+      <button class="btn small" id="pp_addhab" style="flex-shrink:0;">Agregar</button>
+    </div>
+    ` : ''}
     <div class="actions">
       <button class="btn block" id="pp_guardar">${p?'Guardar cambios':'Agregar perro'}</button>
     </div>
@@ -755,6 +818,27 @@ function modalPerro(clienteId, perroId){
   document.getElementById('pp_raza').addEventListener('change', (e)=>{
     document.getElementById('pp_raza_otra').style.display = e.target.value==='__otra__' ? 'block':'none';
   });
+  if(p){
+    document.querySelectorAll('[data-hab]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        const h = p.habilidades.find(x=>x.id===el.dataset.hab);
+        h.estado = el.dataset.val;
+        saveState(); modalPerro(clienteId, perroId);
+      });
+    });
+    document.querySelectorAll('[data-delhab]').forEach(el=>{
+      el.addEventListener('click', ()=>{
+        p.habilidades = p.habilidades.filter(h=>h.id!==el.dataset.delhab);
+        saveState(); modalPerro(clienteId, perroId);
+      });
+    });
+    document.getElementById('pp_addhab').addEventListener('click', ()=>{
+      const nombreHab = document.getElementById('pp_nuevahab').value.trim();
+      if(!nombreHab){ toast('Escribe el nombre de la habilidad'); return; }
+      p.habilidades.push({ id:uid(), nombre:nombreHab, estado:'por_trabajar' });
+      saveState(); modalPerro(clienteId, perroId);
+    });
+  }
   document.getElementById('pp_guardar').addEventListener('click', ()=>{
     const nombre = document.getElementById('pp_nombre').value.trim();
     if(!nombre){ toast('El nombre del perro es obligatorio'); return; }
@@ -764,10 +848,11 @@ function modalPerro(clienteId, perroId){
       nombre,
       raza,
       fechaNacimiento: document.getElementById('pp_nacimiento').value,
+      fechaVacuna: document.getElementById('pp_vacuna').value,
       notas: document.getElementById('pp_notas').value.trim(),
     };
     if(p){ Object.assign(p, data); }
-    else{ c.perros.push({ id:uid(), ...data }); }
+    else{ c.perros.push({ id:uid(), habilidades: HABILIDADES_DEFECTO.map(n=>({id:uid(), nombre:n, estado:'por_trabajar'})), ...data }); }
     saveState(); toast(p?'Perro actualizado':'Perro agregado');
     modalNuevoCliente(clienteId);
     render();
@@ -794,12 +879,15 @@ function modalFichaCliente(clienteId){
     <div class="actions">
       <button class="btn secondary small" id="fc_editar">Editar datos</button>
       <button class="btn small" id="fc_pago">Registrar pago</button>
+      ${c.telefono? `<button class="btn secondary small" id="fc_whatsapp">WhatsApp</button>` : ''}
     </div>
     <div class="section-title">Perros (${(c.perros||[]).length})</div>
     ${(c.perros&&c.perros.length)? c.perros.map(p=>`
       <div class="perro-card">
         <strong>${p.nombre}</strong>
         <div class="muted">${p.raza?p.raza+' · ':''}${calcularEdadTexto(p.fechaNacimiento)}</div>
+        ${(()=>{ const v=estadoVacuna(p.fechaVacuna); if(!v) return ''; const color=v.nivel==='vencida'?'var(--brick)':v.nivel==='pronto'?'var(--brass)':'var(--ink-soft)'; const txt=v.nivel==='vencida'?'Vacuna vencida':v.nivel==='pronto'?'Vacuna vence pronto':'Vacuna al día'; return `<div style="font-size:12px;color:${color};margin-top:2px;">${txt} (${fmtDate(v.proximaISO)})</div>`; })()}
+        ${resumenHabilidades(p)?`<div class="muted" style="margin-top:2px;">${resumenHabilidades(p)}</div>`:''}
         ${p.notas?`<div class="muted" style="margin-top:4px;">${p.notas}</div>`:''}
       </div>`).join('') : '<div class="muted">Sin perros registrados.</div>'}
     <div class="section-title">Historial de clases (${clases.length})</div>
@@ -818,6 +906,11 @@ function modalFichaCliente(clienteId){
   `);
   document.getElementById('fc_editar').addEventListener('click', ()=>modalNuevoCliente(clienteId));
   document.getElementById('fc_pago').addEventListener('click', ()=>modalNuevoPago(null, clienteId));
+  const wa = document.getElementById('fc_whatsapp');
+  if(wa) wa.addEventListener('click', ()=>{
+    const numero = telefonoWhatsApp(c.telefono);
+    window.open(`https://wa.me/${numero}`, '_blank');
+  });
 }
 
 /* ================= PAGOS ================= */
@@ -1017,7 +1110,13 @@ function viewMas(){
     </div>
     <input type="file" id="m_importFile" accept="application/json" style="display:none;">
   </div>
-  <div class="muted" style="text-align:center;margin-top:18px;">Adiestra · versión 1.2</div>
+
+  <div class="section-title" style="margin-top:22px;">Actualizaciones</div>
+  <div class="card">
+    <p class="muted" style="margin:0 0 12px;">Revisa si hay una versión más nueva publicada y actualiza la app sin perder tus datos.</p>
+    <button class="btn secondary small" id="m_checkUpdate">Buscar actualización</button>
+  </div>
+  <div class="muted" style="text-align:center;margin-top:18px;">Adiestra · versión 1.3</div>
   `;
 }
 
@@ -1176,6 +1275,27 @@ function attachViewHandlers(){
       }catch(e){ toast('Archivo inválido'); }
     };
     reader.readAsText(file);
+  });
+
+  const checkUpdate = document.getElementById('m_checkUpdate');
+  if(checkUpdate) checkUpdate.addEventListener('click', async ()=>{
+    if(!('serviceWorker' in navigator)){ toast('Este navegador no soporta actualizaciones automáticas'); return; }
+    try{
+      toast('Buscando actualización...');
+      const reg = await navigator.serviceWorker.getRegistration();
+      if(!reg){ toast('No se pudo conectar con el servicio de actualización'); return; }
+      await reg.update();
+      setTimeout(()=>{
+        if(reg.waiting || reg.installing){
+          toast('Actualización encontrada, aplicando...');
+          setTimeout(()=>location.reload(), 1200);
+        }else{
+          toast('Ya tienes la última versión');
+        }
+      }, 1200);
+    }catch(e){
+      toast('No se pudo revisar. Verifica tu conexión a internet.');
+    }
   });
 }
 
