@@ -522,6 +522,30 @@ function labelEstado(e){
   return {programada:'Programada',completada:'Completada',cancelada:'Cancelada',reprogramada:'Reprogramada'}[e] || e;
 }
 
+function timeSelectHTML(prefix, value, required){
+  const [vh, vm] = (value||'').split(':');
+  let hoursOpts = required ? '' : `<option value="" ${!vh?'selected':''}>--</option>`;
+  for(let h=0; h<24; h++){
+    const hh = pad(h);
+    hoursOpts += `<option value="${hh}" ${vh===hh?'selected':''}>${hh}</option>`;
+  }
+  let minOpts = required ? '' : `<option value="" ${!vm?'selected':''}>--</option>`;
+  for(let m=0; m<60; m+=5){
+    const mm = pad(m);
+    minOpts += `<option value="${mm}" ${vm===mm?'selected':''}>${mm}</option>`;
+  }
+  return `<div style="display:flex;gap:6px;align-items:center;">
+    <select id="${prefix}_h" style="flex:1;">${hoursOpts}</select>
+    <span class="muted">:</span>
+    <select id="${prefix}_m" style="flex:1;">${minOpts}</select>
+  </div>`;
+}
+function readTimeSelect(prefix){
+  const h = document.getElementById(prefix+'_h').value;
+  const m = document.getElementById(prefix+'_m').value;
+  if(!h || !m) return '';
+  return h+':'+m;
+}
 function modalNuevaClase(claseId, presetDate){
   const cl = claseId ? state.clases.find(c=>c.id===claseId) : null;
   const clientesOpts = [...state.clientes].sort((a,b)=>a.nombre.localeCompare(b.nombre));
@@ -530,8 +554,8 @@ function modalNuevaClase(claseId, presetDate){
     <label>Fecha</label>
     <input type="date" id="f_fecha" value="${cl?cl.fecha:(presetDate||agendaSelDay||todayISO())}">
     <div class="field-row">
-      <div><label>Hora inicio</label><input type="time" id="f_inicio" value="${cl?cl.horaInicio:'16:00'}"></div>
-      <div><label>Hora fin</label><input type="time" id="f_fin" value="${cl?cl.horaFin||'':''}"></div>
+      <div><label>Hora inicio</label>${timeSelectHTML('f_inicio', cl?cl.horaInicio:'16:00', true)}</div>
+      <div><label>Hora fin</label>${timeSelectHTML('f_fin', cl?cl.horaFin||'':'', false)}</div>
     </div>
     <label>Tipo</label>
     <div class="chip-row" id="f_tipo">
@@ -539,6 +563,7 @@ function modalNuevaClase(claseId, presetDate){
       <span class="chip ${cl&&cl.tipo==='grupal'?'selected':''}" data-val="grupal">Grupal</span>
     </div>
     <label>Clientes en esta clase</label>
+    <div class="muted" style="margin:-3px 0 6px;">Individual: solo un cliente · Grupal: puedes elegir varios</div>
     <div class="chip-row" id="f_clientes">
       ${clientesOpts.length? clientesOpts.map(c=>`<span class="chip ${seleccionados.includes(c.id)?'selected':''}" data-val="${c.id}">${c.nombre}${c.perros&&c.perros[0]?' ('+c.perros[0].nombre+')':''}</span>`).join(''):'<span class="muted">No tienes clientes aún — crea uno primero en la pestaña Clientes.</span>'}
     </div>
@@ -562,21 +587,33 @@ function modalNuevaClase(claseId, presetDate){
     if(e.target.classList.contains('chip')){
       document.querySelectorAll('#f_tipo .chip').forEach(c=>c.classList.remove('selected'));
       e.target.classList.add('selected');
+      if(e.target.dataset.val==='individual'){
+        const seleccionadosChips = [...document.querySelectorAll('#f_clientes .chip.selected')];
+        seleccionadosChips.forEach((c,i)=>{ if(i>0) c.classList.remove('selected'); });
+      }
     }
   });
   document.getElementById('f_clientes').addEventListener('click', e=>{
-    if(e.target.classList.contains('chip')) e.target.classList.toggle('selected');
+    if(!e.target.classList.contains('chip')) return;
+    const tipoActual = document.querySelector('#f_tipo .chip.selected')?.dataset.val || 'individual';
+    if(tipoActual==='individual'){
+      document.querySelectorAll('#f_clientes .chip').forEach(c=>c.classList.remove('selected'));
+      e.target.classList.add('selected');
+    }else{
+      e.target.classList.toggle('selected');
+    }
   });
   document.getElementById('f_guardar').addEventListener('click', ()=>{
     const fecha = document.getElementById('f_fecha').value;
-    const horaInicio = document.getElementById('f_inicio').value;
+    const horaInicio = readTimeSelect('f_inicio');
     if(!fecha || !horaInicio){ toast('Falta la fecha o la hora'); return; }
     const tipo = document.querySelector('#f_tipo .chip.selected')?.dataset.val || 'individual';
     const clienteIds = [...document.querySelectorAll('#f_clientes .chip.selected')].map(c=>c.dataset.val);
     if(clienteIds.length===0){ toast('Selecciona al menos un cliente'); return; }
+    if(tipo==='individual' && clienteIds.length>1){ toast('Una clase individual solo puede tener un cliente'); return; }
     const data = {
       fecha, horaInicio,
-      horaFin: document.getElementById('f_fin').value,
+      horaFin: readTimeSelect('f_fin'),
       tipo, clienteIds,
       precio: Number(document.getElementById('f_precio').value)||0,
       notas: document.getElementById('f_notas').value.trim(),
@@ -1116,7 +1153,7 @@ function viewMas(){
     <p class="muted" style="margin:0 0 12px;">Revisa si hay una versión más nueva publicada y actualiza la app sin perder tus datos.</p>
     <button class="btn secondary small" id="m_checkUpdate">Buscar actualización</button>
   </div>
-  <div class="muted" style="text-align:center;margin-top:18px;">Adiestra · versión 1.3</div>
+  <div class="muted" style="text-align:center;margin-top:18px;">Adiestra · versión 1.4</div>
   `;
 }
 
