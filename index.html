@@ -504,14 +504,18 @@ function viewAgenda(){
     html += `<div class="empty">No hay clases este día.<br>Toca "+" para agendar una.</div>`;
   }else{
     claseDelDia.forEach(cl=>{
-      const nombres = cl.clienteIds.map(clienteNombre).join(', ') || '(sin clientes)';
+      const detalleClientes = cl.clienteIds.map(cid=>{
+        const c = state.clientes.find(x=>x.id===cid);
+        const perros = c ? perrosResumen(c) : '';
+        return `<div>${clienteNombre(cid)}${perros?`<div class="muted" style="font-size:11.5px;margin-top:1px;">🐾 ${perros}</div>`:''}</div>`;
+      }).join('') || '(sin clientes)';
       html += `
       <div class="card tap" data-open-clase="${cl.id}">
         <div class="row">
           <strong>${cl.horaInicio}${cl.horaFin? '–'+cl.horaFin:''}</strong>
           <span class="badge ${cl.estado}">${labelEstado(cl.estado)}</span>
         </div>
-        <div style="margin-top:6px;">${nombres}</div>
+        <div style="margin-top:6px;">${detalleClientes}</div>
         <div class="row" style="margin-top:6px;">
           <span class="badge ${cl.tipo}">${cl.tipo==='individual'?'Individual':'Grupal'}</span>
           ${cl.precio? `<span class="muted">${fmtMoney(cl.precio)}</span>`:''}
@@ -936,7 +940,7 @@ function modalFichaCliente(clienteId){
         <div class="row"><span>${fmtDate(cl.fecha)} · ${cl.horaInicio}</span><span class="badge ${cl.estado}">${labelEstado(cl.estado)}</span></div>
       </div>`).join('') : '<div class="muted">Sin clases registradas.</div>'}
     <div class="section-title">Pagos (${pagos.length})</div>
-    ${pagos.length? pagos.slice(0,8).map(p=>`
+    ${pagos.length? pagos.map(p=>`
       <div class="card compact">
         <div class="row"><span>${fmtDate(p.fecha)}</span><strong>${fmtMoney(p.monto)}</strong></div>
         <div class="muted">${p.metodo}${p.concepto?' · '+p.concepto:''}</div>
@@ -983,7 +987,7 @@ function viewPagos(){
     <div class="swipe-wrap">
       <div class="swipe-actions" data-swipe-del="${p.id}">Eliminar</div>
       <div class="swipe-content card" data-swipe-id="${p.id}" style="margin-bottom:0;">
-        <div class="row"><span>${clienteNombre(p.clienteId)}</span><strong>${fmtMoney(p.monto)}</strong></div>
+        <div class="row"><span class="tap" data-open-cliente="${p.clienteId}" style="text-decoration:underline;text-decoration-color:var(--line);">${clienteNombre(p.clienteId)}</span><strong>${fmtMoney(p.monto)}</strong></div>
         <div class="muted">${fmtDate(p.fecha)} · ${p.metodo}${p.concepto?' · '+p.concepto:''}</div>
       </div>
     </div>`).join('') : '<div class="empty">No hay pagos registrados este mes.</div>'}
@@ -1162,7 +1166,7 @@ function viewMas(){
     <p class="muted" style="margin:0 0 12px;">Revisa si hay una versión más nueva publicada y actualiza la app sin perder tus datos.</p>
     <button class="btn secondary small" id="m_checkUpdate">Buscar actualización</button>
   </div>
-  <div class="muted" style="text-align:center;margin-top:18px;">Adiestra · versión 1.7</div>
+  <div class="muted" style="text-align:center;margin-top:18px;">Adiestra · versión 1.8</div>
   `;
 }
 
