@@ -935,10 +935,37 @@ function modalFichaCliente(clienteId){
         ${p.notas?`<div class="muted" style="margin-top:4px;">${p.notas}</div>`:''}
       </div>`).join('') : '<div class="muted">Sin perros registrados.</div>'}
     <div class="section-title">Historial de clases (${clases.length})</div>
-    ${clases.length? clases.slice(0,8).map(cl=>`
-      <div class="card compact tap" data-open-clase-ficha="${cl.id}">
-        <div class="row"><span>${fmtDate(cl.fecha)} · ${cl.horaInicio}</span><span class="badge ${cl.estado}">${labelEstado(cl.estado)}</span></div>
-      </div>`).join('') : '<div class="muted">Sin clases registradas.</div>'}
+    <div class="segmented">
+      <button data-hist-modo="todo" class="${historialModo==='todo'?'active':''}">Todo</button>
+      <button data-hist-modo="ocho" class="${historialModo==='ocho'?'active':''}">8</button>
+      <button data-hist-modo="mes" class="${historialModo==='mes'?'active':''}">Mes</button>
+    </div>
+    ${(()=>{
+      let listaClases = clases;
+      let navHTML = '';
+      if(historialModo==='ocho'){
+        const totalPaginas = Math.max(1, Math.ceil(clases.length/8));
+        if(historialPagina >= totalPaginas) historialPagina = totalPaginas-1;
+        if(historialPagina < 0) historialPagina = 0;
+        listaClases = clases.slice(historialPagina*8, historialPagina*8+8);
+        navHTML = `<div class="cal-nav" style="margin-bottom:10px;">
+          <button data-hist-pag="-1">‹</button>
+          <h3 style="font-size:14px;">Página ${historialPagina+1} de ${totalPaginas}</h3>
+          <button data-hist-pag="1">›</button>
+        </div>`;
+      }else if(historialModo==='mes'){
+        listaClases = clases.filter(cl=>cl.fecha.slice(0,7)===historialMes);
+        navHTML = `<div class="cal-nav" style="margin-bottom:10px;">
+          <button data-hist-mes-nav="-1">‹</button>
+          <h3 style="font-size:14px;">${monthLabel(historialMes)}</h3>
+          <button data-hist-mes-nav="1">›</button>
+        </div>`;
+      }
+      return navHTML + (listaClases.length? listaClases.map(cl=>`
+        <div class="card compact tap" data-open-clase-ficha="${cl.id}">
+          <div class="row"><span>${fmtDate(cl.fecha)} · ${cl.horaInicio}</span><span class="badge ${cl.estado}">${labelEstado(cl.estado)}</span></div>
+        </div>`).join('') : '<div class="muted">No hay clases en este rango.</div>');
+    })()}
     <div class="section-title">Pagos (${pagos.length})</div>
     ${pagos.length? pagos.map(p=>`
       <div class="card compact">
@@ -953,6 +980,25 @@ function modalFichaCliente(clienteId){
   document.querySelectorAll('[data-open-clase-ficha]').forEach(el=>{
     el.addEventListener('click', ()=>modalDetalleClase(el.dataset.openClaseFicha));
   });
+  document.querySelectorAll('[data-hist-modo]').forEach(el=>{
+    el.addEventListener('click', ()=>{
+      historialModo = el.dataset.histModo;
+      historialPagina = 0;
+      modalFichaCliente(clienteId);
+    });
+  });
+  document.querySelectorAll('[data-hist-pag]').forEach(el=>{
+    el.addEventListener('click', ()=>{
+      historialPagina += Number(el.dataset.histPag);
+      modalFichaCliente(clienteId);
+    });
+  });
+  document.querySelectorAll('[data-hist-mes-nav]').forEach(el=>{
+    el.addEventListener('click', ()=>{
+      historialMes = shiftMonth(historialMes, Number(el.dataset.histMesNav));
+      modalFichaCliente(clienteId);
+    });
+  });
   const wa = document.getElementById('fc_whatsapp');
   if(wa) wa.addEventListener('click', ()=>{
     const numero = telefonoWhatsApp(c.telefono);
@@ -962,6 +1008,9 @@ function modalFichaCliente(clienteId){
 
 /* ================= PAGOS ================= */
 let pagosMonth = todayISO().slice(0,7);
+let historialModo = 'todo';
+let historialPagina = 0;
+let historialMes = todayISO().slice(0,7);
 function viewPagos(){
   const ingresosMes = state.pagos.filter(p=>p.fecha.slice(0,7)===pagosMonth).reduce((s,p)=>s+Number(p.monto),0);
   const pagosDelMes = state.pagos.filter(p=>p.fecha.slice(0,7)===pagosMonth).sort((a,b)=>b.fecha.localeCompare(a.fecha));
@@ -1166,7 +1215,7 @@ function viewMas(){
     <p class="muted" style="margin:0 0 12px;">Revisa si hay una versión más nueva publicada y actualiza la app sin perder tus datos.</p>
     <button class="btn secondary small" id="m_checkUpdate">Buscar actualización</button>
   </div>
-  <div class="muted" style="text-align:center;margin-top:18px;">Adiestra · versión 1.8</div>
+  <div class="muted" style="text-align:center;margin-top:18px;">Adiestra · versión 1.9</div>
   `;
 }
 
