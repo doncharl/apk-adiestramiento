@@ -322,6 +322,8 @@ const RAZAS_DEFECTO = [
 const HABILIDADES_DEFECTO = [
   'Sentado','Quieto','Llamado','Caminar sin jalar','Acostado','No saltar sobre personas'
 ];
+const APP_VERSION = '1.10';
+const CAMBIOS_VERSION = 'Historial de clases del cliente ahora se agrupa por mes en "Todo"; al paginar con "8" se conserva la posición del scroll; razas ordenadas alfabéticamente; y ahora "Buscar actualización" te muestra qué cambió antes de actualizar.';
 function migrarDatos(){
   if(!state.config) state.config = {fontSize:'md', darkMode:false};
   if(!state.config.razas) state.config.razas = [...RAZAS_DEFECTO];
@@ -824,7 +826,7 @@ function modalPerro(clienteId, perroId){
     <label>Raza</label>
     <select id="pp_raza">
       <option value="">Sin especificar</option>
-      ${state.config.razas.map(r=>`<option value="${r}" ${p&&p.raza===r?'selected':''}>${r}</option>`).join('')}
+      ${[...state.config.razas].sort((a,b)=>a.localeCompare(b)).map(r=>`<option value="${r}" ${p&&p.raza===r?'selected':''}>${r}</option>`).join('')}
       <option value="__otra__" ${razaEsPersonalizada?'selected':''}>Otra (especificar)</option>
     </select>
     <input type="text" id="pp_raza_otra" placeholder="Especifica la raza" style="margin-top:8px;display:${razaEsPersonalizada?'block':'none'};" value="${razaEsPersonalizada?p.raza:''}">
@@ -938,33 +940,38 @@ function modalFichaCliente(clienteId){
     <div class="segmented">
       <button data-hist-modo="todo" class="${historialModo==='todo'?'active':''}">Todo</button>
       <button data-hist-modo="ocho" class="${historialModo==='ocho'?'active':''}">8</button>
-      <button data-hist-modo="mes" class="${historialModo==='mes'?'active':''}">Mes</button>
     </div>
     ${(()=>{
-      let listaClases = clases;
-      let navHTML = '';
       if(historialModo==='ocho'){
         const totalPaginas = Math.max(1, Math.ceil(clases.length/8));
         if(historialPagina >= totalPaginas) historialPagina = totalPaginas-1;
         if(historialPagina < 0) historialPagina = 0;
-        listaClases = clases.slice(historialPagina*8, historialPagina*8+8);
-        navHTML = `<div class="cal-nav" style="margin-bottom:10px;">
+        const listaClases = clases.slice(historialPagina*8, historialPagina*8+8);
+        const navHTML = `<div class="cal-nav" style="margin-bottom:10px;">
           <button data-hist-pag="-1">‹</button>
           <h3 style="font-size:14px;">Página ${historialPagina+1} de ${totalPaginas}</h3>
           <button data-hist-pag="1">›</button>
         </div>`;
-      }else if(historialModo==='mes'){
-        listaClases = clases.filter(cl=>cl.fecha.slice(0,7)===historialMes);
-        navHTML = `<div class="cal-nav" style="margin-bottom:10px;">
-          <button data-hist-mes-nav="-1">‹</button>
-          <h3 style="font-size:14px;">${monthLabel(historialMes)}</h3>
-          <button data-hist-mes-nav="1">›</button>
-        </div>`;
+        return navHTML + (listaClases.length? listaClases.map(cl=>`
+          <div class="card compact tap" data-open-clase-ficha="${cl.id}">
+            <div class="row"><span>${fmtDate(cl.fecha)} · ${cl.horaInicio}</span><span class="badge ${cl.estado}">${labelEstado(cl.estado)}</span></div>
+          </div>`).join('') : '<div class="muted">No hay clases en este rango.</div>');
       }
-      return navHTML + (listaClases.length? listaClases.map(cl=>`
-        <div class="card compact tap" data-open-clase-ficha="${cl.id}">
+      // modo "todo": agrupado por mes
+      if(!clases.length) return '<div class="muted">Sin clases registradas.</div>';
+      let out = '';
+      let mesActual = null;
+      clases.forEach(cl=>{
+        const mesCl = cl.fecha.slice(0,7);
+        if(mesCl !== mesActual){
+          out += `<div class="muted" style="font-weight:600;margin:12px 0 6px;">${monthLabel(mesCl)}</div>`;
+          mesActual = mesCl;
+        }
+        out += `<div class="card compact tap" data-open-clase-ficha="${cl.id}">
           <div class="row"><span>${fmtDate(cl.fecha)} · ${cl.horaInicio}</span><span class="badge ${cl.estado}">${labelEstado(cl.estado)}</span></div>
-        </div>`).join('') : '<div class="muted">No hay clases en este rango.</div>');
+        </div>`;
+      });
+      return out;
     })()}
     <div class="section-title">Pagos (${pagos.length})</div>
     ${pagos.length? pagos.map(p=>`
@@ -990,13 +997,13 @@ function modalFichaCliente(clienteId){
   document.querySelectorAll('[data-hist-pag]').forEach(el=>{
     el.addEventListener('click', ()=>{
       historialPagina += Number(el.dataset.histPag);
+      const sheet = document.querySelector('.sheet');
+      const scrollPos = sheet ? sheet.scrollTop : 0;
       modalFichaCliente(clienteId);
-    });
-  });
-  document.querySelectorAll('[data-hist-mes-nav]').forEach(el=>{
-    el.addEventListener('click', ()=>{
-      historialMes = shiftMonth(historialMes, Number(el.dataset.histMesNav));
-      modalFichaCliente(clienteId);
+      requestAnimationFrame(()=>{
+        const nuevoSheet = document.querySelector('.sheet');
+        if(nuevoSheet) nuevoSheet.scrollTop = scrollPos;
+      });
     });
   });
   const wa = document.getElementById('fc_whatsapp');
@@ -1177,7 +1184,7 @@ function viewMas(){
   <div class="card">
     <p class="muted" style="margin:0 0 10px;">Aparecen como opciones al registrar el perro de un cliente.</p>
     <div class="chip-row" id="razas_list">
-      ${state.config.razas.map(r=>`<span class="chip" data-raza-del="${r}">${r} ✕</span>`).join('')}
+      ${[...state.config.razas].sort((a,b)=>a.localeCompare(b)).map(r=>`<span class="chip" data-raza-del="${r}">${r} ✕</span>`).join('')}
     </div>
     <div class="field-row" style="margin-top:10px;">
       <input type="text" id="raza_nueva" placeholder="Nueva raza">
@@ -1215,7 +1222,7 @@ function viewMas(){
     <p class="muted" style="margin:0 0 12px;">Revisa si hay una versión más nueva publicada y actualiza la app sin perder tus datos.</p>
     <button class="btn secondary small" id="m_checkUpdate">Buscar actualización</button>
   </div>
-  <div class="muted" style="text-align:center;margin-top:18px;">Adiestra · versión 1.9</div>
+  <div class="muted" style="text-align:center;margin-top:18px;">Adiestra · versión ${APP_VERSION}</div>
   `;
 }
 
@@ -1459,6 +1466,19 @@ function attachViewHandlers(){
   if(checkUpdate) checkUpdate.addEventListener('click', async ()=>{
     toast('Buscando actualización...');
     try{
+      const resp = await fetch('index.html?_=' + Date.now(), {cache:'no-store'});
+      const texto = await resp.text();
+      const verMatch = texto.match(/const APP_VERSION\s*=\s*'([^']+)'/);
+      const cambiosMatch = texto.match(/const CAMBIOS_VERSION\s*=\s*'([^']*)'/);
+      const nuevaVersion = verMatch ? verMatch[1] : null;
+      const cambios = cambiosMatch ? cambiosMatch[1] : 'Sin detalles disponibles.';
+      if(!nuevaVersion){ toast('No se pudo leer la versión remota.'); return; }
+      if(nuevaVersion === APP_VERSION){
+        toast(`Ya tienes la última versión (${APP_VERSION})`);
+        return;
+      }
+      const continuar = confirm(`Nueva versión disponible: ${nuevaVersion}\n(tienes instalada la ${APP_VERSION})\n\nNovedades:\n${cambios}\n\n¿Actualizar ahora?`);
+      if(!continuar) return;
       if('caches' in window){
         const keys = await caches.keys();
         await Promise.all(keys.map(k=>caches.delete(k)));
@@ -1470,9 +1490,9 @@ function attachViewHandlers(){
       setTimeout(()=>{
         const base = window.location.origin + window.location.pathname;
         window.location.href = base + '?_=' + Date.now();
-      }, 400);
+      }, 300);
     }catch(e){
-      toast('No se pudo actualizar. Verifica tu conexión a internet.');
+      toast('No se pudo revisar. Verifica tu conexión a internet.');
     }
   });
   initSwipeToDelete();
