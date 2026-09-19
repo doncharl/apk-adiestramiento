@@ -340,8 +340,8 @@ const HABILIDADES_DEFECTO = [
 const ETIQUETAS_DEFECTO = [
   'Reactivo','Cachorro','Miedoso','No sociable con perros','Ansioso','Ladra mucho'
 ];
-const APP_VERSION = '1.11';
-const CAMBIOS_VERSION = 'Historial de la ficha del cliente paginado por mes, recordatorio automático de respaldo, etiquetas de comportamiento del perro, boton deshacer al eliminar clases y pagos, estado de cuenta imprimible en PDF, y bonos de clases prepagadas.';
+const APP_VERSION = '1.12';
+const CAMBIOS_VERSION = 'Nueva funcion: resumen de voz por clase. Graba narrando lo que paso, se transcribe a texto, genera un resumen con IA (Gemini, con tu propia clave gratuita), lo editas y apruebas, y lo conviertes en PDF para compartir por WhatsApp.';
 function migrarDatos(){
   if(!state.config) state.config = {fontSize:'md', darkMode:false};
   if(!state.config.razas) state.config.razas = [...RAZAS_DEFECTO];
@@ -723,9 +723,12 @@ function modalDetalleClase(claseId){
     <textarea id="d_nota" rows="2" placeholder="Ej: mejoró el llamado, seguir con impulsos...">${cl.notas||''}</textarea>
     <div class="actions">
       <button class="btn block" id="d_guardar">Guardar</button>
+      <button class="btn secondary block" id="d_resumen">🎙️ Resumen de voz para el cliente</button>
       <button class="btn secondary block" id="d_editar">Editar datos de la clase</button>
     </div>
   `);
+  const resumenBtn = document.getElementById('d_resumen');
+  if(resumenBtn) resumenBtn.addEventListener('click', ()=> modalResumenClase(claseId));
   const usarBonoBtn = document.getElementById('d_usarbono');
   if(usarBonoBtn) usarBonoBtn.addEventListener('click', ()=>{
     bonoActivo.usadas += 1;
@@ -756,6 +759,177 @@ function modalDetalleClase(claseId){
     saveState(); closeModal(); render(); toast('Clase actualizada');
   });
   document.getElementById('d_editar').addEventListener('click', ()=> modalNuevaClase(claseId));
+}
+
+/* ================= RESUMEN DE VOZ PARA EL CLIENTE ================= */
+let reconocimientoVoz = null;
+function modalResumenClase(claseId){
+  const cl = state.clases.find(c=>c.id===claseId);
+  if(!cl) return;
+  const nombresClientes = cl.clienteIds.map(clienteNombre).join(', ');
+  const tieneGemini = !!state.config.geminiApiKey;
+  const SRDisponible = !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+
+  openModal('Resumen de la clase', `
+    <div class="muted" style="margin-bottom:10px;">${fmtDate(cl.fecha)} · ${nombresClientes}</div>
+    ${!SRDisponible? `<div class="card compact" style="border-color:var(--brick);"><span style="color:var(--brick);">Este navegador no soporta dictado por voz. Puedes escribir el texto manualmente abajo.</span></div>` : ''}
+    <label>Narra lo que pasó en la clase (o escríbelo)</label>
+    <textarea id="rc_texto" rows="7" placeholder="Toca grabar y narra qué se trabajó, avances y tareas pendientes...">${cl.resumenTexto||''}</textarea>
+    <div class="actions" style="margin-top:10px;">
+      ${SRDisponible? `<button class="btn secondary" id="rc_grabar">🎙️ Grabar</button>`:''}
+      <button class="btn secondary" id="rc_guardarTexto">Guardar texto</button>
+    </div>
+    <div class="muted" style="margin-top:6px;">La grabación necesita conexión a internet para transcribir (usa el reconocimiento de voz de Chrome).</div>
+
+    <div class="divider"></div>
+    ${tieneGemini? `
+      <button class="btn block" id="rc_generarIA">✨ Generar resumen con IA</button>
+    ` : `
+      <div class="card compact"><span class="muted">Configura tu clave de Gemini en Más para generar resúmenes automáticos. Mientras tanto, puedes aprobar el texto tal como lo escribiste.</span></div>
+    `}
+
+    <div class="actions" style="margin-top:16px;">
+      <button class="btn block" id="rc_aprobar">✓ Aprobar y generar PDF</button>
+    </div>
+    <div id="rc_pdfActions" style="display:${cl.resumenPdfListo?'block':'none'};margin-top:10px;">
+      <div class="actions" style="margin-top:0;">
+        <button class="btn secondary small" id="rc_verpdf">Ver PDF</button>
+        <button class="btn secondary small" id="rc_compartir">Compartir por WhatsApp</button>
+      </div>
+    </div>
+  `);
+
+  document.getElementById('rc_guardarTexto').addEventListener('click', ()=>{
+    cl.resumenTexto = document.getElementById('rc_texto').value;
+    saveState(); toast('Texto guardado');
+  });
+
+  const grabarBtn = document.getElementById('rc_grabar');
+  if(grabarBtn){
+    grabarBtn.addEventListener('click', ()=>{
+      const textarea = document.getElementById('rc_texto');
+      if(reconocimientoVoz){
+        reconocimientoVoz.stop();
+        reconocimientoVoz = null;
+        grabarBtn.textContent = '🎙️ Grabar';
+        return;
+      }
+      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+      reconocimientoVoz = new SR();
+      reconocimientoVoz.lang = 'es-CO';
+      reconocimientoVoz.continuous = true;
+      reconocimientoVoz.interimResults = true;
+      let base = textarea.value ? textarea.value.trim()+' ' : '';
+      reconocimientoVoz.onresult = (e)=>{
+        let interim = '';
+        for(let i=e.resultIndex; i<e.results.length; i++){
+          const transcript = e.results[i][0].transcript;
+          if(e.results[i].isFinal) base += transcript + ' ';
+          else interim += transcript;
+        }
+        textarea.value = base + interim;
+      };
+      reconocimientoVoz.onerror = ()=>{ toast('No se pudo escuchar. Revisa el permiso de micrófono.'); };
+      reconocimientoVoz.onend = ()=>{ grabarBtn.textContent = '🎙️ Grabar'; reconocimientoVoz=null; };
+      reconocimientoVoz.start();
+      grabarBtn.textContent = '⏹ Detener';
+      toast('Escuchando...');
+    });
+  }
+
+  const iaBtn = document.getElementById('rc_generarIA');
+  if(iaBtn){
+    iaBtn.addEventListener('click', async ()=>{
+      const textoOriginal = document.getElementById('rc_texto').value.trim();
+      if(!textoOriginal){ toast('Primero graba o escribe la narración de la clase'); return; }
+      iaBtn.disabled = true; iaBtn.textContent = 'Generando...';
+      try{
+        const prompt = `Eres el asistente de un adiestrador canino profesional en Colombia. A partir de esta narración informal de lo que pasó en una clase de adiestramiento, escribe un resumen breve, claro y en tono cercano para enviarle directamente al dueño del perro. Incluye: qué se trabajó en la clase, avances observados, y las tareas o ejercicios pendientes para practicar en casa antes de la próxima clase. No inventes información que no esté en la narración. Narración original:\n\n${textoOriginal}`;
+        const resp = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent', {
+          method:'POST',
+          headers:{'Content-Type':'application/json','x-goog-api-key':state.config.geminiApiKey},
+          body: JSON.stringify({ contents:[{parts:[{text:prompt}]}] })
+        });
+        const data = await resp.json();
+        const resumen = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if(!resumen){
+          toast('No se pudo generar el resumen. Revisa tu clave de API.');
+        }else{
+          document.getElementById('rc_texto').value = resumen.trim();
+          cl.resumenTexto = resumen.trim();
+          saveState();
+          toast('Resumen generado. Revísalo antes de aprobar.');
+        }
+      }catch(e){
+        toast('Error al conectar con Gemini. Verifica tu internet y tu clave.');
+      }
+      iaBtn.disabled = false; iaBtn.textContent = '✨ Generar resumen con IA';
+    });
+  }
+
+  document.getElementById('rc_aprobar').addEventListener('click', ()=>{
+    const textoFinal = document.getElementById('rc_texto').value.trim();
+    if(!textoFinal){ toast('Escribe o genera el resumen antes de aprobar'); return; }
+    cl.resumenTexto = textoFinal;
+    cl.resumenPdfListo = true;
+    saveState();
+    generarPdfResumenClase(claseId);
+    toast('PDF generado');
+    modalResumenClase(claseId);
+  });
+  const verPdfBtn = document.getElementById('rc_verpdf');
+  if(verPdfBtn) verPdfBtn.addEventListener('click', ()=> generarPdfResumenClase(claseId));
+  const compartirBtn = document.getElementById('rc_compartir');
+  if(compartirBtn) compartirBtn.addEventListener('click', ()=> compartirResumenWhatsApp(claseId));
+}
+
+function construirHtmlResumenClase(cl){
+  const nombresClientes = cl.clienteIds.map(clienteNombre).join(', ');
+  const perrosClase = cl.clienteIds.map(cid=>{
+    const c = state.clientes.find(x=>x.id===cid);
+    return c ? perrosResumen(c) : '';
+  }).filter(Boolean).join(', ');
+  const textoHtml = (cl.resumenTexto||'').split('\n').filter(Boolean).map(p=>`<p>${p}</p>`).join('');
+  return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
+  <title>Resumen de clase - ${nombresClientes}</title>
+  <style>
+    body{font-family:-apple-system,Arial,sans-serif;color:#23291F;padding:24px;max-width:640px;margin:0 auto;line-height:1.6;}
+    h1{font-family:Georgia,serif;color:#374C3D;margin-bottom:2px;}
+    .sub{color:#5B6154;margin-bottom:24px;}
+    .caja{background:#F3EEE0;border-radius:10px;padding:18px;}
+    p{margin:0 0 12px;}
+    @media print{ button{display:none;} }
+  </style></head><body>
+  <h1>Adiestra — Resumen de clase</h1>
+  <div class="sub">${nombresClientes}${perrosClase?' · 🐾 '+perrosClase:''} · ${fmtDateLong(cl.fecha)}</div>
+  <div class="caja">${textoHtml || '<p>(Sin contenido)</p>'}</div>
+  <button onclick="window.print()" style="margin-top:20px;padding:10px 20px;border-radius:999px;border:none;background:#4B6650;color:#fff;font-size:14px;">Imprimir / Guardar como PDF</button>
+  </body></html>`;
+}
+function generarPdfResumenClase(claseId){
+  const cl = state.clases.find(c=>c.id===claseId);
+  if(!cl) return;
+  const html = construirHtmlResumenClase(cl);
+  const blob = new Blob([html], {type:'text/html'});
+  const url = URL.createObjectURL(blob);
+  window.open(url, '_blank');
+}
+async function compartirResumenWhatsApp(claseId){
+  const cl = state.clases.find(c=>c.id===claseId);
+  if(!cl) return;
+  const html = construirHtmlResumenClase(cl);
+  const htmlBlob = new Blob([html], {type:'text/html'});
+  const file = new File([htmlBlob], `resumen-clase-${cl.fecha}.html`, {type:'text/html'});
+  try{
+    if(navigator.canShare && navigator.canShare({files:[file]})){
+      await navigator.share({ files:[file], title:'Resumen de la clase', text:'Aquí tienes el resumen de la clase de hoy.' });
+      return;
+    }
+  }catch(e){ /* usuario canceló o no soportado, seguimos al respaldo */ }
+  const cliente = state.clientes.find(x=>cl.clienteIds.includes(x.id));
+  const numero = cliente ? telefonoWhatsApp(cliente.telefono) : '';
+  const textoWA = encodeURIComponent(`Resumen de la clase de ${fmtDate(cl.fecha)}:\n\n${cl.resumenTexto||''}`);
+  window.open(`https://wa.me/${numero}?text=${textoWA}`, '_blank');
 }
 
 /* ================= CLIENTES ================= */
@@ -1412,6 +1586,18 @@ function viewMas(){
   </div>
   ${state.config.ultimoRespaldo? `<div class="muted" style="text-align:center;margin-top:8px;">Última copia: ${fmtDate(state.config.ultimoRespaldo)}</div>`:''}
 
+  <div class="section-title" style="margin-top:22px;">Resumen de clases por IA (Gemini)</div>
+  <div class="card">
+    <p class="muted" style="margin:0 0 10px;">Para generar resúmenes automáticos de tus notas de voz, pega tu propia clave de la API de Gemini. Se guarda solo en este celular, nunca se sube a GitHub ni a ningún servidor.</p>
+    <label style="margin-top:0;">Tu clave de API de Gemini</label>
+    <input type="password" id="cfg_geminikey" value="${state.config.geminiApiKey||''}" placeholder="Pega tu clave aquí">
+    <div class="actions" style="margin-top:10px;">
+      <button class="btn small" id="cfg_geminikey_guardar">Guardar clave</button>
+      ${state.config.geminiApiKey? '<button class="btn secondary small" id="cfg_geminikey_borrar">Quitar clave</button>':''}
+    </div>
+    <p class="muted" style="margin:10px 0 0;">Consíguela gratis en <strong>aistudio.google.com</strong> (Google AI Studio → Get API key). Sin esta clave, igual puedes grabar y transcribir tus notas por voz, solo que no se generará el resumen automático.</p>
+  </div>
+
   <div class="section-title" style="margin-top:22px;">Actualizaciones</div>
   <div class="card">
     <p class="muted" style="margin:0 0 12px;">Revisa si hay una versión más nueva publicada y actualiza la app sin perder tus datos.</p>
@@ -1650,6 +1836,20 @@ function attachViewHandlers(){
     state.config.respaldoSnoozeHasta = addDias(todayISO(), 3);
     saveState(); render();
     toast('Te lo recordamos en 3 días');
+  });
+  const geminiGuardar = document.getElementById('cfg_geminikey_guardar');
+  if(geminiGuardar) geminiGuardar.addEventListener('click', ()=>{
+    const val = document.getElementById('cfg_geminikey').value.trim();
+    if(!val){ toast('Pega una clave antes de guardar'); return; }
+    state.config.geminiApiKey = val;
+    saveState(); render();
+    toast('Clave guardada en este celular');
+  });
+  const geminiBorrar = document.getElementById('cfg_geminikey_borrar');
+  if(geminiBorrar) geminiBorrar.addEventListener('click', ()=>{
+    delete state.config.geminiApiKey;
+    saveState(); render();
+    toast('Clave eliminada');
   });
   const imp = document.getElementById('m_import');
   const impFile = document.getElementById('m_importFile');
