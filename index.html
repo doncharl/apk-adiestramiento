@@ -340,8 +340,8 @@ const HABILIDADES_DEFECTO = [
 const ETIQUETAS_DEFECTO = [
   'Reactivo','Cachorro','Miedoso','No sociable con perros','Ansioso','Ladra mucho'
 ];
-const APP_VERSION = '1.12';
-const CAMBIOS_VERSION = 'Nueva funcion: resumen de voz por clase. Graba narrando lo que paso, se transcribe a texto, genera un resumen con IA (Gemini, con tu propia clave gratuita), lo editas y apruebas, y lo conviertes en PDF para compartir por WhatsApp.';
+const APP_VERSION = '1.13';
+const CAMBIOS_VERSION = 'Corregido: la transcripcion de voz ya no repite lo que dices varias veces. Tambien se actualizo el modelo de IA a uno vigente (gemini-3.5-flash-lite) ya que el anterior fue descontinuado por Google.';
 function migrarDatos(){
   if(!state.config) state.config = {fontSize:'md', darkMode:false};
   if(!state.config.razas) state.config.razas = [...RAZAS_DEFECTO];
@@ -805,35 +805,47 @@ function modalResumenClase(claseId){
   });
 
   const grabarBtn = document.getElementById('rc_grabar');
+  let grabandoActivo = false;
+  function iniciarSesionReconocimiento(){
+    const textarea = document.getElementById('rc_texto');
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    reconocimientoVoz = new SR();
+    reconocimientoVoz.lang = 'es-CO';
+    reconocimientoVoz.continuous = false;
+    reconocimientoVoz.interimResults = true;
+    const baseAlIniciar = textarea.value ? textarea.value.trim()+' ' : '';
+    reconocimientoVoz.onresult = (e)=>{
+      let finalTexto = '', interim = '';
+      for(let i=0; i<e.results.length; i++){
+        if(e.results[i].isFinal) finalTexto += e.results[i][0].transcript;
+        else interim += e.results[i][0].transcript;
+      }
+      textarea.value = baseAlIniciar + finalTexto + (interim? ' '+interim : '');
+    };
+    reconocimientoVoz.onerror = (e)=>{
+      if(e.error!=='no-speech' && e.error!=='aborted') toast('No se pudo escuchar: '+e.error);
+    };
+    reconocimientoVoz.onend = ()=>{
+      if(grabandoActivo){
+        iniciarSesionReconocimiento();
+      }else{
+        grabarBtn.textContent = '🎙️ Grabar';
+        reconocimientoVoz = null;
+      }
+    };
+    reconocimientoVoz.start();
+  }
   if(grabarBtn){
     grabarBtn.addEventListener('click', ()=>{
-      const textarea = document.getElementById('rc_texto');
-      if(reconocimientoVoz){
-        reconocimientoVoz.stop();
-        reconocimientoVoz = null;
-        grabarBtn.textContent = '🎙️ Grabar';
+      if(grabandoActivo){
+        grabandoActivo = false;
+        if(reconocimientoVoz) reconocimientoVoz.stop();
         return;
       }
-      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-      reconocimientoVoz = new SR();
-      reconocimientoVoz.lang = 'es-CO';
-      reconocimientoVoz.continuous = true;
-      reconocimientoVoz.interimResults = true;
-      let base = textarea.value ? textarea.value.trim()+' ' : '';
-      reconocimientoVoz.onresult = (e)=>{
-        let interim = '';
-        for(let i=e.resultIndex; i<e.results.length; i++){
-          const transcript = e.results[i][0].transcript;
-          if(e.results[i].isFinal) base += transcript + ' ';
-          else interim += transcript;
-        }
-        textarea.value = base + interim;
-      };
-      reconocimientoVoz.onerror = ()=>{ toast('No se pudo escuchar. Revisa el permiso de micrófono.'); };
-      reconocimientoVoz.onend = ()=>{ grabarBtn.textContent = '🎙️ Grabar'; reconocimientoVoz=null; };
-      reconocimientoVoz.start();
+      grabandoActivo = true;
       grabarBtn.textContent = '⏹ Detener';
       toast('Escuchando...');
+      iniciarSesionReconocimiento();
     });
   }
 
@@ -845,7 +857,7 @@ function modalResumenClase(claseId){
       iaBtn.disabled = true; iaBtn.textContent = 'Generando...';
       try{
         const prompt = `Eres el asistente de un adiestrador canino profesional en Colombia. A partir de esta narración informal de lo que pasó en una clase de adiestramiento, escribe un resumen breve, claro y en tono cercano para enviarle directamente al dueño del perro. Incluye: qué se trabajó en la clase, avances observados, y las tareas o ejercicios pendientes para practicar en casa antes de la próxima clase. No inventes información que no esté en la narración. Narración original:\n\n${textoOriginal}`;
-        const resp = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent', {
+        const resp = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent', {
           method:'POST',
           headers:{'Content-Type':'application/json','x-goog-api-key':state.config.geminiApiKey},
           body: JSON.stringify({ contents:[{parts:[{text:prompt}]}] })
