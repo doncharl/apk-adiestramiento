@@ -8,6 +8,7 @@
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
 <meta name="theme-color" content="#4B6650">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <style>
   :root{
     --bg:#EFE9DC;
@@ -340,8 +341,8 @@ const HABILIDADES_DEFECTO = [
 const ETIQUETAS_DEFECTO = [
   'Reactivo','Cachorro','Miedoso','No sociable con perros','Ansioso','Ladra mucho'
 ];
-const APP_VERSION = '1.13';
-const CAMBIOS_VERSION = 'Corregido: la transcripcion de voz ya no repite lo que dices varias veces. Tambien se actualizo el modelo de IA a uno vigente (gemini-3.5-flash-lite) ya que el anterior fue descontinuado por Google.';
+const APP_VERSION = '1.14';
+const CAMBIOS_VERSION = 'PDFs reales guardados por cliente (visibles en su ficha), vista semanal en Agenda, confirmacion de clases programadas por WhatsApp con mensajes variados, calendario de historial por cliente, y la pestana 8 ahora se llama Paquetes.';
 function migrarDatos(){
   if(!state.config) state.config = {fontSize:'md', darkMode:false};
   if(!state.config.razas) state.config.razas = [...RAZAS_DEFECTO];
@@ -357,6 +358,7 @@ function migrarDatos(){
     });
     if(!c.estado) c.estado = (c.activo===false) ? 'terminado' : 'en_proceso';
     if(!c.bonos) c.bonos = [];
+    if(!c.documentos) c.documentos = [];
   });
 }
 
@@ -425,6 +427,91 @@ function telefonoWhatsApp(tel){
   let limpio = (tel||'').replace(/[^\d]/g,'');
   if(limpio.length===10) limpio = '57'+limpio;
   return limpio;
+}
+const MENSAJES_CONFIRMACION_FUTURO = [
+  h => `Hola, buen día 🐾 Quiero confirmar la clase del ${h.dia} ${h.fecha} a las ${h.hora}. ¿Todo bien por tu parte?`,
+  h => `¡Hola! Te escribo para confirmar la clase del ${h.dia} ${h.fecha} a las ${h.hora}. Cualquier cosa me avisas.`,
+  h => `Buen día 🙂 Solo para confirmar: la clase queda para el ${h.dia} ${h.fecha} a las ${h.hora}. ¿Nos vemos ahí?`,
+  h => `Hola, ¿cómo estás? Te confirmo la clase del ${h.dia} ${h.fecha} a las ${h.hora}. Avísame si hay algún cambio.`,
+];
+const MENSAJES_CONFIRMACION_HOY = [
+  h => `Hola, buen día 🐾 Para confirmar la clase de hoy a las ${h.hora}. ¿Seguimos en pie?`,
+  h => `¡Hola! Te escribo para confirmar que la clase de hoy sigue a las ${h.hora}.`,
+  h => `Buen día 🙂 Solo para confirmar la clase de hoy a las ${h.hora}. Nos vemos ahí.`,
+  h => `Hola, ¿todo bien? Te confirmo la clase de hoy a las ${h.hora}.`,
+];
+function enviarConfirmacionWhatsApp(claseId, clienteId){
+  const cl = state.clases.find(c=>c.id===claseId);
+  const c = state.clientes.find(x=>x.id===clienteId);
+  if(!cl || !c){ toast('No se encontró el cliente'); return; }
+  const hoy = todayISO();
+  const hora12 = (()=>{
+    const [h,m] = cl.horaInicio.split(':').map(Number);
+    const ampm = h>=12 ? 'p.m.' : 'a.m.';
+    const h12 = h%12===0 ? 12 : h%12;
+    return `${h12}:${pad(m)} ${ampm}`;
+  })();
+  let texto;
+  if(cl.fecha === hoy){
+    const plantilla = MENSAJES_CONFIRMACION_HOY[Math.floor(Math.random()*MENSAJES_CONFIRMACION_HOY.length)];
+    texto = plantilla({ hora: hora12 });
+  }else{
+    const d = new Date(cl.fecha+'T00:00:00');
+    const dia = d.toLocaleDateString('es-CO',{weekday:'long'});
+    const fechaCorta = d.toLocaleDateString('es-CO',{day:'numeric',month:'short'});
+    const plantilla = MENSAJES_CONFIRMACION_FUTURO[Math.floor(Math.random()*MENSAJES_CONFIRMACION_FUTURO.length)];
+    texto = plantilla({ dia, fecha:fechaCorta, hora:hora12 });
+  }
+  const numero = telefonoWhatsApp(c.telefono);
+  if(!numero){ toast('Este cliente no tiene teléfono registrado'); return; }
+  window.open(`https://wa.me/${numero}?text=${encodeURIComponent(texto)}`, '_blank');
+}
+
+/* ---------- Generación de PDFs reales, guardados por cliente ---------- */
+function crearPdfDoc(titulo, subtitulo){
+  if(!window.jspdf){ toast('No se pudo cargar el generador de PDF. Verifica tu internet.'); return null; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit:'pt', format:'a4' });
+  const margen = 48;
+  let y = 60;
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(18);
+  doc.setTextColor(55,76,61);
+  doc.text('Adiestra', margen, y);
+  y += 22;
+  doc.setFontSize(14);
+  doc.text(titulo, margen, y);
+  y += 18;
+  doc.setFont('helvetica','normal');
+  doc.setFontSize(10.5);
+  doc.setTextColor(91,97,84);
+  doc.text(subtitulo, margen, y);
+  y += 24;
+  doc.setDrawColor(220,211,190);
+  doc.line(margen, y, 595-margen, y);
+  y += 20;
+  doc.setTextColor(35,41,31);
+  return { doc, margen, y, anchoUtil: 595-margen*2 };
+}
+function escribirParrafos(ctx, texto, fontSize){
+  ctx.doc.setFont('helvetica','normal');
+  ctx.doc.setFontSize(fontSize||11);
+  const lineas = ctx.doc.splitTextToSize(texto, ctx.anchoUtil);
+  lineas.forEach(linea=>{
+    if(ctx.y > 780){ ctx.doc.addPage(); ctx.y = 60; }
+    ctx.doc.text(linea, ctx.margen, ctx.y);
+    ctx.y += (fontSize||11) * 1.35;
+  });
+}
+function guardarDocumentoCliente(clienteId, nombreArchivo, tipo, doc){
+  const c = state.clientes.find(x=>x.id===clienteId);
+  if(!c) return;
+  const dataUri = doc.output('datauristring');
+  c.documentos.push({ id:uid(), nombre:nombreArchivo, tipo, fecha:todayISO(), data:dataUri });
+  saveState();
+}
+function descargarPdfDoc(doc, nombreArchivo){
+  doc.save(nombreArchivo);
 }
 function labelEstadoCliente(e){ return {cotizando:'Cotizando', en_proceso:'En proceso', terminado:'Terminado'}[e]||e; }
 function claseCssEstadoCliente(e){ return {cotizando:'cotizando', en_proceso:'enproceso', terminado:'terminado'}[e]||''; }
@@ -512,33 +599,84 @@ function weeksInMonth(ym){
   for(let i=0;i<cells.length;i+=7) weeks.push(cells.slice(i,i+7));
   return weeks;
 }
+function diasDeLaSemana(iso){
+  const d = new Date(iso+'T00:00:00');
+  const offset = (d.getDay()+6)%7;
+  d.setDate(d.getDate()-offset);
+  const dias = [];
+  for(let i=0;i<7;i++){
+    dias.push(d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate()));
+    d.setDate(d.getDate()+1);
+  }
+  return dias;
+}
+function rangoSemanaLabel(dias){
+  const ini = new Date(dias[0]+'T00:00:00');
+  const fin = new Date(dias[6]+'T00:00:00');
+  const finTxt = fin.toLocaleDateString('es-CO',{day:'numeric',month:'short',year:'numeric'});
+  if(ini.getMonth()===fin.getMonth()){
+    return `${ini.getDate()} – ${finTxt}`;
+  }
+  const iniTxt = ini.toLocaleDateString('es-CO',{day:'numeric',month:'short'});
+  return `${iniTxt} – ${finTxt}`;
+}
+let agendaVista = 'mes';
 function viewAgenda(){
   const hoy = todayISO();
-  const cells = daysInMonthArr(agendaMonth);
-  while(cells.length % 7 !== 0) cells.push(null);
   const clasesPorDia = {};
   state.clases.forEach(cl=>{ (clasesPorDia[cl.fecha] = clasesPorDia[cl.fecha]||[]).push(cl); });
 
   let html = `
-  <div class="cal-nav">
-    <button data-cal-nav="-1">‹</button>
-    <h3>${monthLabel(agendaMonth)}</h3>
-    <button data-cal-nav="1">›</button>
-  </div>
-  <div class="cal-weekday-row">
-    ${['Lu','Ma','Mi','Ju','Vi','Sá','Do'].map(d=>`<div class="cal-weekday">${d}</div>`).join('')}
-  </div>
-  <div class="cal-grid">
-    ${cells.map(iso=>{
-      if(!iso) return `<div class="cal-cell empty"></div>`;
-      const dayNum = Number(iso.slice(8,10));
-      const has = clasesPorDia[iso] && clasesPorDia[iso].length>0;
-      const cls = ['cal-cell'];
-      if(iso===hoy) cls.push('today');
-      if(iso===agendaSelDay) cls.push('selected');
-      return `<div class="${cls.join(' ')}" data-cal-day="${iso}"><span>${dayNum}</span>${has?'<span class="dot"></span>':''}</div>`;
-    }).join('')}
+  <div class="segmented" style="max-width:180px;margin-bottom:10px;">
+    <button data-agenda-vista="mes" class="${agendaVista==='mes'?'active':''}">Mes</button>
+    <button data-agenda-vista="semana" class="${agendaVista==='semana'?'active':''}">Semana</button>
   </div>`;
+
+  if(agendaVista==='semana'){
+    const dias = diasDeLaSemana(agendaSelDay);
+    html += `
+    <div class="cal-nav">
+      <button data-semana-nav="-1">‹</button>
+      <h3 style="font-size:15px;">${rangoSemanaLabel(dias)}</h3>
+      <button data-semana-nav="1">›</button>
+    </div>
+    <div class="cal-weekday-row">
+      ${['Lu','Ma','Mi','Ju','Vi','Sá','Do'].map(d=>`<div class="cal-weekday">${d}</div>`).join('')}
+    </div>
+    <div class="cal-grid" style="grid-auto-rows:clamp(42px,13vw,54px);">
+      ${dias.map(iso=>{
+        const dayNum = Number(iso.slice(8,10));
+        const has = clasesPorDia[iso] && clasesPorDia[iso].length>0;
+        const cls = ['cal-cell'];
+        if(iso===hoy) cls.push('today');
+        if(iso===agendaSelDay) cls.push('selected');
+        return `<div class="${cls.join(' ')}" data-cal-day="${iso}"><span>${dayNum}</span>${has?'<span class="dot"></span>':''}</div>`;
+      }).join('')}
+    </div>`;
+  }else{
+    const cells = daysInMonthArr(agendaMonth);
+    while(cells.length % 7 !== 0) cells.push(null);
+    html += `
+    <div class="cal-nav">
+      <button data-cal-nav="-1">‹</button>
+      <h3>${monthLabel(agendaMonth)}</h3>
+      <button data-cal-nav="1">›</button>
+    </div>
+    <div class="cal-weekday-row">
+      ${['Lu','Ma','Mi','Ju','Vi','Sá','Do'].map(d=>`<div class="cal-weekday">${d}</div>`).join('')}
+    </div>
+    <div class="cal-grid">
+      ${cells.map(iso=>{
+        if(!iso) return `<div class="cal-cell empty"></div>`;
+        const dayNum = Number(iso.slice(8,10));
+        const has = clasesPorDia[iso] && clasesPorDia[iso].length>0;
+        const cls = ['cal-cell'];
+        if(iso===hoy) cls.push('today');
+        if(iso===agendaSelDay) cls.push('selected');
+        return `<div class="${cls.join(' ')}" data-cal-day="${iso}"><span>${dayNum}</span>${has?'<span class="dot"></span>':''}</div>`;
+      }).join('')}
+    </div>`;
+  }
 
   const claseDelDia = (clasesPorDia[agendaSelDay]||[]).sort((a,b)=>a.horaInicio.localeCompare(b.horaInicio));
   if(claseDelDia.length===0){
@@ -719,6 +857,14 @@ function modalDetalleClase(claseId){
       <span class="chip ${cl.estado==='cancelada'?'selected':''}" data-est="cancelada">Cancelada</span>
       <span class="chip ${cl.estado==='reprogramada'?'selected':''}" data-est="reprogramada">Reprogramada</span>
     </div>
+    ${cl.estado==='programada' ? `
+    <div class="section-title">Confirmar por WhatsApp</div>
+    <div class="chip-row" id="d_confirmarChips">
+      ${cl.clienteIds.map(cid=>{
+        const c = state.clientes.find(x=>x.id===cid);
+        return `<span class="chip" data-confirmar-cliente="${cid}">${c?c.nombre:'—'}</span>`;
+      }).join('')}
+    </div>` : ''}
     <div class="section-title">Nota rápida de esta clase</div>
     <textarea id="d_nota" rows="2" placeholder="Ej: mejoró el llamado, seguir con impulsos...">${cl.notas||''}</textarea>
     <div class="actions">
@@ -727,6 +873,9 @@ function modalDetalleClase(claseId){
       <button class="btn secondary block" id="d_editar">Editar datos de la clase</button>
     </div>
   `);
+  document.querySelectorAll('[data-confirmar-cliente]').forEach(el=>{
+    el.addEventListener('click', ()=> enviarConfirmacionWhatsApp(claseId, el.dataset.confirmarCliente));
+  });
   const resumenBtn = document.getElementById('d_resumen');
   if(resumenBtn) resumenBtn.addEventListener('click', ()=> modalResumenClase(claseId));
   const usarBonoBtn = document.getElementById('d_usarbono');
@@ -890,48 +1039,44 @@ function modalResumenClase(claseId){
     modalResumenClase(claseId);
   });
   const verPdfBtn = document.getElementById('rc_verpdf');
-  if(verPdfBtn) verPdfBtn.addEventListener('click', ()=> generarPdfResumenClase(claseId));
+  if(verPdfBtn) verPdfBtn.addEventListener('click', ()=> generarPdfResumenClase(claseId, {descargar:true, guardar:false}));
   const compartirBtn = document.getElementById('rc_compartir');
   if(compartirBtn) compartirBtn.addEventListener('click', ()=> compartirResumenWhatsApp(claseId));
 }
 
-function construirHtmlResumenClase(cl){
+function construirDocResumenClase(cl){
   const nombresClientes = cl.clienteIds.map(clienteNombre).join(', ');
   const perrosClase = cl.clienteIds.map(cid=>{
     const c = state.clientes.find(x=>x.id===cid);
     return c ? perrosResumen(c) : '';
   }).filter(Boolean).join(', ');
-  const textoHtml = (cl.resumenTexto||'').split('\n').filter(Boolean).map(p=>`<p>${p}</p>`).join('');
-  return `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
-  <title>Resumen de clase - ${nombresClientes}</title>
-  <style>
-    body{font-family:-apple-system,Arial,sans-serif;color:#23291F;padding:24px;max-width:640px;margin:0 auto;line-height:1.6;}
-    h1{font-family:Georgia,serif;color:#374C3D;margin-bottom:2px;}
-    .sub{color:#5B6154;margin-bottom:24px;}
-    .caja{background:#F3EEE0;border-radius:10px;padding:18px;}
-    p{margin:0 0 12px;}
-    @media print{ button{display:none;} }
-  </style></head><body>
-  <h1>Adiestra — Resumen de clase</h1>
-  <div class="sub">${nombresClientes}${perrosClase?' · 🐾 '+perrosClase:''} · ${fmtDateLong(cl.fecha)}</div>
-  <div class="caja">${textoHtml || '<p>(Sin contenido)</p>'}</div>
-  <button onclick="window.print()" style="margin-top:20px;padding:10px 20px;border-radius:999px;border:none;background:#4B6650;color:#fff;font-size:14px;">Imprimir / Guardar como PDF</button>
-  </body></html>`;
+  const subtitulo = `${nombresClientes}${perrosClase?' · '+perrosClase:''} · ${fmtDateLong(cl.fecha)}`;
+  const ctx = crearPdfDoc('Resumen de la clase', subtitulo);
+  if(!ctx) return null;
+  escribirParrafos(ctx, cl.resumenTexto || '(Sin contenido)', 11.5);
+  return ctx.doc;
 }
-function generarPdfResumenClase(claseId){
+function generarPdfResumenClase(claseId, {descargar=true, guardar=true}={}){
   const cl = state.clases.find(c=>c.id===claseId);
-  if(!cl) return;
-  const html = construirHtmlResumenClase(cl);
-  const blob = new Blob([html], {type:'text/html'});
-  const url = URL.createObjectURL(blob);
-  window.open(url, '_blank');
+  if(!cl) return null;
+  const doc = construirDocResumenClase(cl);
+  if(!doc) return null;
+  const nombreArchivo = `resumen-clase-${cl.fecha}.pdf`;
+  if(descargar) descargarPdfDoc(doc, nombreArchivo);
+  if(guardar){
+    cl.clienteIds.forEach(cid=>{
+      guardarDocumentoCliente(cid, nombreArchivo, 'Resumen de clase', doc);
+    });
+  }
+  return doc;
 }
 async function compartirResumenWhatsApp(claseId){
   const cl = state.clases.find(c=>c.id===claseId);
   if(!cl) return;
-  const html = construirHtmlResumenClase(cl);
-  const htmlBlob = new Blob([html], {type:'text/html'});
-  const file = new File([htmlBlob], `resumen-clase-${cl.fecha}.html`, {type:'text/html'});
+  const doc = construirDocResumenClase(cl);
+  if(!doc) return;
+  const pdfBlob = doc.output('blob');
+  const file = new File([pdfBlob], `resumen-clase-${cl.fecha}.pdf`, {type:'application/pdf'});
   try{
     if(navigator.canShare && navigator.canShare({files:[file]})){
       await navigator.share({ files:[file], title:'Resumen de la clase', text:'Aquí tienes el resumen de la clase de hoy.' });
@@ -1203,6 +1348,18 @@ function modalFichaCliente(clienteId){
         <div class="muted">Comprado el ${fmtDate(b.fecha)} · ${fmtMoney(b.monto)}</div>
       </div>`;
     }).join('') : '<div class="muted">Sin bonos registrados.</div>'}
+    <div class="section-title">Documentos (${(c.documentos||[]).length})</div>
+    ${(c.documentos&&c.documentos.length)? [...c.documentos].reverse().map(d=>`
+      <div class="card compact">
+        <div class="row"><span>${d.nombre}</span><span class="badge cotizando">${d.tipo}</span></div>
+        <div class="row" style="margin-top:6px;">
+          <span class="muted">${fmtDate(d.fecha)}</span>
+          <div>
+            <button class="btn ghost small" data-verdoc="${d.id}">Ver</button>
+            <button class="btn ghost small" data-delerdoc="${d.id}">Borrar</button>
+          </div>
+        </div>
+      </div>`).join('') : '<div class="muted">Sin documentos guardados todavía.</div>'}
     <div class="section-title">Perros (${(c.perros||[]).length})</div>
     ${(c.perros&&c.perros.length)? c.perros.map(p=>`
       <div class="perro-card">
@@ -1216,7 +1373,8 @@ function modalFichaCliente(clienteId){
     <div class="section-title">Historial de clases (${clases.length})</div>
     <div class="segmented">
       <button data-hist-modo="todo" class="${historialModo==='todo'?'active':''}">Todo</button>
-      <button data-hist-modo="ocho" class="${historialModo==='ocho'?'active':''}">8</button>
+      <button data-hist-modo="ocho" class="${historialModo==='ocho'?'active':''}">Paquetes</button>
+      <button data-hist-modo="calendario" class="${historialModo==='calendario'?'active':''}">Calendario</button>
     </div>
     ${(()=>{
       if(historialModo==='ocho'){
@@ -1233,6 +1391,39 @@ function modalFichaCliente(clienteId){
           <div class="card compact tap" data-open-clase-ficha="${cl.id}">
             <div class="row"><span>${fmtDate(cl.fecha)} · ${cl.horaInicio}</span><span class="badge ${cl.estado}">${labelEstado(cl.estado)}</span></div>
           </div>`).join('') : '<div class="muted">No hay clases en este rango.</div>');
+      }
+      if(historialModo==='calendario'){
+        const cells = daysInMonthArr(historialCalMes);
+        while(cells.length % 7 !== 0) cells.push(null);
+        const clasesPorDia = {};
+        clases.forEach(cl=>{ (clasesPorDia[cl.fecha] = clasesPorDia[cl.fecha]||[]).push(cl); });
+        const hoy = todayISO();
+        const gridHTML = `
+        <div class="cal-nav">
+          <button data-hist-cal-nav="-1">‹</button>
+          <h3>${monthLabel(historialCalMes)}</h3>
+          <button data-hist-cal-nav="1">›</button>
+        </div>
+        <div class="cal-weekday-row">
+          ${['Lu','Ma','Mi','Ju','Vi','Sá','Do'].map(d=>`<div class="cal-weekday">${d}</div>`).join('')}
+        </div>
+        <div class="cal-grid">
+          ${cells.map(iso=>{
+            if(!iso) return `<div class="cal-cell empty"></div>`;
+            const dayNum = Number(iso.slice(8,10));
+            const has = clasesPorDia[iso] && clasesPorDia[iso].length>0;
+            const cls = ['cal-cell'];
+            if(iso===hoy) cls.push('today');
+            if(iso===historialCalSelDay) cls.push('selected');
+            return `<div class="${cls.join(' ')}" data-hist-cal-day="${iso}"><span>${dayNum}</span>${has?'<span class="dot"></span>':''}</div>`;
+          }).join('')}
+        </div>`;
+        const claseDia = (clasesPorDia[historialCalSelDay]||[]);
+        const listaDia = claseDia.length? claseDia.map(cl=>`
+          <div class="card compact tap" data-open-clase-ficha="${cl.id}">
+            <div class="row"><span>${cl.horaInicio}</span><span class="badge ${cl.estado}">${labelEstado(cl.estado)}</span></div>
+          </div>`).join('') : '<div class="muted">Sin clases este día.</div>';
+        return gridHTML + listaDia;
       }
       // modo "todo": paginado por mes (igual que "8" pero por mes en vez de por cantidad)
       if(!clases.length) return '<div class="muted">Sin clases registradas.</div>';
@@ -1299,6 +1490,30 @@ function modalFichaCliente(clienteId){
       });
     });
   });
+  document.querySelectorAll('[data-hist-cal-nav]').forEach(el=>{
+    el.addEventListener('click', ()=>{
+      historialCalMes = shiftMonth(historialCalMes, Number(el.dataset.histCalNav));
+      modalFichaCliente(clienteId);
+    });
+  });
+  document.querySelectorAll('[data-hist-cal-day]').forEach(el=>{
+    el.addEventListener('click', ()=>{
+      historialCalSelDay = el.dataset.histCalDay;
+      modalFichaCliente(clienteId);
+    });
+  });
+  document.querySelectorAll('[data-verdoc]').forEach(el=>{
+    el.addEventListener('click', ()=>{
+      const doc = c.documentos.find(d=>d.id===el.dataset.verdoc);
+      if(doc) window.open(doc.data, '_blank');
+    });
+  });
+  document.querySelectorAll('[data-delerdoc]').forEach(el=>{
+    el.addEventListener('click', ()=>{
+      c.documentos = c.documentos.filter(d=>d.id!==el.dataset.delerdoc);
+      saveState(); modalFichaCliente(clienteId);
+    });
+  });
   const wa = document.getElementById('fc_whatsapp');
   if(wa) wa.addEventListener('click', ()=>{
     const numero = telefonoWhatsApp(c.telefono);
@@ -1344,35 +1559,42 @@ function abrirEstadoCuenta(clienteId){
   const pagos = state.pagos.filter(p=>p.clienteId===clienteId).sort((a,b)=>a.fecha.localeCompare(b.fecha));
   const saldo = saldoCliente(clienteId);
   const saldoTxt = saldo>0? `${fmtMoney(saldo)} pendiente` : (saldo<0? `${fmtMoney(Math.abs(saldo))} a favor del cliente` : 'Al día');
-  const html = `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
-  <title>Estado de cuenta - ${c.nombre}</title>
-  <style>
-    body{font-family:-apple-system,Arial,sans-serif;color:#23291F;padding:24px;max-width:640px;margin:0 auto;}
-    h1{font-family:Georgia,serif;color:#374C3D;margin-bottom:2px;}
-    .sub{color:#5B6154;margin-bottom:24px;}
-    table{width:100%;border-collapse:collapse;margin-bottom:24px;}
-    th,td{text-align:left;padding:8px 6px;border-bottom:1px solid #DCD3BE;font-size:14px;}
-    th{color:#5B6154;font-size:12px;text-transform:uppercase;}
-    .saldo{font-size:20px;font-weight:bold;padding:14px;background:#F3EEE0;border-radius:10px;margin-bottom:24px;}
-    .badge{padding:2px 8px;border-radius:999px;font-size:11px;background:#EFDFBB;color:#AD7C2C;}
-    @media print{ button{display:none;} }
-  </style></head><body>
-  <h1>Adiestra — Estado de cuenta</h1>
-  <div class="sub">${c.nombre}${c.coDueno?' &amp; '+c.coDueno:''} · Generado el ${fmtDateLong(todayISO())}</div>
-  <div class="saldo">Saldo actual: ${saldoTxt}</div>
-  <h3>Clases</h3>
-  <table><tr><th>Fecha</th><th>Hora</th><th>Estado</th><th>Precio</th></tr>
-  ${clases.map(cl=>`<tr><td>${fmtDate(cl.fecha)}</td><td>${cl.horaInicio}</td><td><span class="badge">${labelEstado(cl.estado)}</span></td><td>${cl.precio?fmtMoney(cl.precio):'-'}</td></tr>`).join('') || '<tr><td colspan="4">Sin clases registradas</td></tr>'}
-  </table>
-  <h3>Pagos</h3>
-  <table><tr><th>Fecha</th><th>Monto</th><th>Método</th><th>Concepto</th></tr>
-  ${pagos.map(p=>`<tr><td>${fmtDate(p.fecha)}</td><td>${fmtMoney(p.monto)}</td><td>${p.metodo}</td><td>${p.concepto||'-'}</td></tr>`).join('') || '<tr><td colspan="4">Sin pagos registrados</td></tr>'}
-  </table>
-  <button onclick="window.print()" style="padding:10px 20px;border-radius:999px;border:none;background:#4B6650;color:#fff;font-size:14px;">Imprimir / Guardar como PDF</button>
-  </body></html>`;
-  const blob = new Blob([html], {type:'text/html'});
-  const url = URL.createObjectURL(blob);
-  window.open(url, '_blank');
+  const subtitulo = `${c.nombre}${c.coDueno?' & '+c.coDueno:''} · Generado el ${fmtDateLong(todayISO())}`;
+  const ctx = crearPdfDoc('Estado de cuenta', subtitulo);
+  if(!ctx) return;
+  ctx.doc.setFont('helvetica','bold');
+  ctx.doc.setFontSize(13);
+  ctx.doc.setTextColor(75,102,80);
+  ctx.doc.text(`Saldo actual: ${saldoTxt}`, ctx.margen, ctx.y);
+  ctx.y += 26;
+  ctx.doc.setFont('helvetica','bold');
+  ctx.doc.setFontSize(12);
+  ctx.doc.setTextColor(35,41,31);
+  ctx.doc.text('Clases', ctx.margen, ctx.y);
+  ctx.y += 16;
+  if(clases.length){
+    clases.forEach(cl=>{
+      escribirParrafos(ctx, `${fmtDate(cl.fecha)} · ${cl.horaInicio} · ${labelEstado(cl.estado)}${cl.precio?' · '+fmtMoney(cl.precio):''}`, 10.5);
+    });
+  }else{
+    escribirParrafos(ctx, 'Sin clases registradas.', 10.5);
+  }
+  ctx.y += 14;
+  ctx.doc.setFont('helvetica','bold');
+  ctx.doc.setFontSize(12);
+  ctx.doc.text('Pagos', ctx.margen, ctx.y);
+  ctx.y += 16;
+  if(pagos.length){
+    pagos.forEach(p=>{
+      escribirParrafos(ctx, `${fmtDate(p.fecha)} · ${fmtMoney(p.monto)} · ${p.metodo}${p.concepto?' · '+p.concepto:''}`, 10.5);
+    });
+  }else{
+    escribirParrafos(ctx, 'Sin pagos registrados.', 10.5);
+  }
+  const nombreArchivo = `estado-cuenta-${c.nombre.replace(/\s+/g,'-')}-${todayISO()}.pdf`;
+  descargarPdfDoc(ctx.doc, nombreArchivo);
+  guardarDocumentoCliente(clienteId, nombreArchivo, 'Estado de cuenta', ctx.doc);
+  toast('PDF generado y guardado en Documentos');
 }
 
 /* ================= PAGOS ================= */
@@ -1380,6 +1602,8 @@ let pagosMonth = todayISO().slice(0,7);
 let historialModo = 'todo';
 let historialPagina = 0;
 let historialMes = todayISO().slice(0,7);
+let historialCalMes = todayISO().slice(0,7);
+let historialCalSelDay = todayISO();
 function viewPagos(){
   const ingresosMes = state.pagos.filter(p=>p.fecha.slice(0,7)===pagosMonth).reduce((s,p)=>s+Number(p.monto),0);
   const pagosDelMes = state.pagos.filter(p=>p.fecha.slice(0,7)===pagosMonth).sort((a,b)=>b.fecha.localeCompare(a.fecha));
@@ -1751,6 +1975,19 @@ function attachViewHandlers(){
   });
   document.querySelectorAll('[data-cal-nav]').forEach(el=>{
     el.addEventListener('click', ()=>{ agendaMonth = shiftMonth(agendaMonth, Number(el.dataset.calNav)); render(); });
+  });
+  document.querySelectorAll('[data-agenda-vista]').forEach(el=>{
+    el.addEventListener('click', ()=>{ agendaVista = el.dataset.agendaVista; render(); });
+  });
+  document.querySelectorAll('[data-semana-nav]').forEach(el=>{
+    el.addEventListener('click', ()=>{
+      const dias = diasDeLaSemana(agendaSelDay);
+      const nuevaBase = new Date(dias[0]+'T00:00:00');
+      nuevaBase.setDate(nuevaBase.getDate() + Number(el.dataset.semanaNav)*7);
+      agendaSelDay = nuevaBase.getFullYear()+'-'+pad(nuevaBase.getMonth()+1)+'-'+pad(nuevaBase.getDate());
+      agendaMonth = agendaSelDay.slice(0,7);
+      render();
+    });
   });
   document.querySelectorAll('[data-pagos-nav]').forEach(el=>{
     el.addEventListener('click', ()=>{ pagosMonth = shiftMonth(pagosMonth, Number(el.dataset.pagosNav)); render(); });
