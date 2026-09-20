@@ -9,6 +9,7 @@
 <link rel="apple-touch-icon" href="icon-192.png">
 <meta name="theme-color" content="#4B6650">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <style>
   :root{
     --bg:#EFE9DC;
@@ -341,8 +342,8 @@ const HABILIDADES_DEFECTO = [
 const ETIQUETAS_DEFECTO = [
   'Reactivo','Cachorro','Miedoso','No sociable con perros','Ansioso','Ladra mucho'
 ];
-const APP_VERSION = '1.14';
-const CAMBIOS_VERSION = 'PDFs reales guardados por cliente (visibles en su ficha), vista semanal en Agenda, confirmacion de clases programadas por WhatsApp con mensajes variados, calendario de historial por cliente, y la pestana 8 ahora se llama Paquetes.';
+const APP_VERSION = '1.15';
+const CAMBIOS_VERSION = 'Los PDF (estado de cuenta y resumen de clase) ahora conservan el diseno bonito con colores y tarjetas, en vez de texto plano. El resumen con IA usa un formato mas completo y estructurado (fecha, perro, dueno, trabajo del dia, tareas para casa, proximos pasos).';
 function migrarDatos(){
   if(!state.config) state.config = {fontSize:'md', darkMode:false};
   if(!state.config.razas) state.config.razas = [...RAZAS_DEFECTO];
@@ -468,40 +469,40 @@ function enviarConfirmacionWhatsApp(claseId, clienteId){
 }
 
 /* ---------- Generación de PDFs reales, guardados por cliente ---------- */
-function crearPdfDoc(titulo, subtitulo){
-  if(!window.jspdf){ toast('No se pudo cargar el generador de PDF. Verifica tu internet.'); return null; }
-  const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({ unit:'pt', format:'a4' });
-  const margen = 48;
-  let y = 60;
-  doc.setFont('helvetica','bold');
-  doc.setFontSize(18);
-  doc.setTextColor(55,76,61);
-  doc.text('Adiestra', margen, y);
-  y += 22;
-  doc.setFontSize(14);
-  doc.text(titulo, margen, y);
-  y += 18;
-  doc.setFont('helvetica','normal');
-  doc.setFontSize(10.5);
-  doc.setTextColor(91,97,84);
-  doc.text(subtitulo, margen, y);
-  y += 24;
-  doc.setDrawColor(220,211,190);
-  doc.line(margen, y, 595-margen, y);
-  y += 20;
-  doc.setTextColor(35,41,31);
-  return { doc, margen, y, anchoUtil: 595-margen*2 };
-}
-function escribirParrafos(ctx, texto, fontSize){
-  ctx.doc.setFont('helvetica','normal');
-  ctx.doc.setFontSize(fontSize||11);
-  const lineas = ctx.doc.splitTextToSize(texto, ctx.anchoUtil);
-  lineas.forEach(linea=>{
-    if(ctx.y > 780){ ctx.doc.addPage(); ctx.y = 60; }
-    ctx.doc.text(linea, ctx.margen, ctx.y);
-    ctx.y += (fontSize||11) * 1.35;
-  });
+async function generarPdfDesdeHtml(htmlInterior, nombreArchivo){
+  if(!window.jspdf || !window.html2canvas){ toast('No se pudo cargar el generador de PDF. Verifica tu internet.'); return null; }
+  const contenedor = document.createElement('div');
+  contenedor.style.position = 'fixed';
+  contenedor.style.left = '-9999px';
+  contenedor.style.top = '0';
+  contenedor.style.width = '650px';
+  contenedor.style.background = '#ffffff';
+  contenedor.innerHTML = htmlInterior;
+  document.body.appendChild(contenedor);
+  let pdf;
+  try{
+    const canvas = await window.html2canvas(contenedor, { scale:2, backgroundColor:'#ffffff', useCORS:true });
+    const imgData = canvas.toDataURL('image/jpeg', 0.95);
+    const { jsPDF } = window.jspdf;
+    pdf = new jsPDF({ unit:'pt', format:'a4' });
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    const imgWidth = pageWidth;
+    const imgHeight = canvas.height * imgWidth / canvas.width;
+    let heightLeft = imgHeight;
+    let position = 0;
+    pdf.addImage(imgData, 'JPEG', 0, position, imgWidth, imgHeight);
+    heightLeft -= pageHeight;
+    while(heightLeft > 0){
+      position = heightLeft - imgHeight;
+      pdf.addPage();
+      pdf.addImage(imgData, 'JPEG', 0, position, imgWidth, imgHeight);
+      heightLeft -= pageHeight;
+    }
+  } finally {
+    document.body.removeChild(contenedor);
+  }
+  return pdf;
 }
 function guardarDocumentoCliente(clienteId, nombreArchivo, tipo, doc){
   const c = state.clientes.find(x=>x.id===clienteId);
@@ -1005,7 +1006,50 @@ function modalResumenClase(claseId){
       if(!textoOriginal){ toast('Primero graba o escribe la narración de la clase'); return; }
       iaBtn.disabled = true; iaBtn.textContent = 'Generando...';
       try{
-        const prompt = `Eres el asistente de un adiestrador canino profesional en Colombia. A partir de esta narración informal de lo que pasó en una clase de adiestramiento, escribe un resumen breve, claro y en tono cercano para enviarle directamente al dueño del perro. Incluye: qué se trabajó en la clase, avances observados, y las tareas o ejercicios pendientes para practicar en casa antes de la próxima clase. No inventes información que no esté en la narración. Narración original:\n\n${textoOriginal}`;
+        const nombreDueno = cl.clienteIds.map(clienteNombre).join(', ');
+        const nombrePerro = cl.clienteIds.map(cid=>{
+          const cte = state.clientes.find(x=>x.id===cid);
+          return cte ? perrosResumen(cte) : '';
+        }).filter(Boolean).join(', ');
+        const sistema = `Eres un asistente experto de un adiestrador canino profesional. Tu único trabajo es convertir la narración de una clase (transcripción de voz o notas) en un resumen claro, amable y profesional para enviar al dueño del perro.
+
+Reglas:
+- Tono cercano, positivo y profesional (español latinoamericano).
+- Sé concreto y útil. No uses relleno ni frases genéricas.
+- No inventes información que no esté en la transcripción.
+- Si falta algún dato, omítelo o indica que no se mencionó.
+- Estructura SIEMPRE la respuesta exactamente así (respeta los títulos):
+
+**Resumen de la clase**
+- Fecha: [fecha]
+- Perro: [nombre del perro]
+- Dueño: [nombre del dueño]
+
+**Lo que trabajamos hoy**
+- (viñetas claras de los ejercicios o temas)
+
+**Cómo respondió [nombre del perro]**
+- (2 a 4 frases sobre comportamiento, avances y dificultades)
+
+**Tareas para casa**
+- (lista concreta y accionable)
+
+**Observaciones adicionales**
+- (solo si hay algo importante; si no, omite esta sección)
+
+**Próximos pasos**
+- (recomendación breve de qué seguir trabajando)
+
+No agregues saludos, despedidas ni texto fuera de esta estructura.`;
+        const prompt = `${sistema}
+
+Datos conocidos de esta clase (úsalos para completar Fecha, Perro y Dueño; no los inventes ni los cambies):
+- Fecha: ${fmtDateLong(cl.fecha)}
+- Perro: ${nombrePerro || 'no especificado'}
+- Dueño: ${nombreDueno || 'no especificado'}
+
+Transcripción original de la clase:
+${textoOriginal}`;
         const resp = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent', {
           method:'POST',
           headers:{'Content-Type':'application/json','x-goog-api-key':state.config.geminiApiKey},
@@ -1028,14 +1072,14 @@ function modalResumenClase(claseId){
     });
   }
 
-  document.getElementById('rc_aprobar').addEventListener('click', ()=>{
+  document.getElementById('rc_aprobar').addEventListener('click', async ()=>{
     const textoFinal = document.getElementById('rc_texto').value.trim();
     if(!textoFinal){ toast('Escribe o genera el resumen antes de aprobar'); return; }
     cl.resumenTexto = textoFinal;
     cl.resumenPdfListo = true;
     saveState();
-    generarPdfResumenClase(claseId);
-    toast('PDF generado');
+    await generarPdfResumenClase(claseId);
+    toast('PDF generado y guardado');
     modalResumenClase(claseId);
   });
   const verPdfBtn = document.getElementById('rc_verpdf');
@@ -1044,22 +1088,53 @@ function modalResumenClase(claseId){
   if(compartirBtn) compartirBtn.addEventListener('click', ()=> compartirResumenWhatsApp(claseId));
 }
 
-function construirDocResumenClase(cl){
+function markdownBasicoAHtml(texto){
+  const lineas = (texto||'').split('\n');
+  let html = '';
+  let enLista = false;
+  lineas.forEach(linea=>{
+    const t = linea.trim();
+    if(!t){ return; }
+    const esTitulo = /^\*\*(.+)\*\*$/.test(t);
+    const esViñeta = /^-\s+/.test(t);
+    if(esTitulo){
+      if(enLista){ html += '</ul>'; enLista=false; }
+      const contenido = t.replace(/^\*\*(.+)\*\*$/, '$1');
+      html += `<h3 style="font-size:14.5px;color:#374C3D;margin:16px 0 6px;">${contenido}</h3>`;
+    }else if(esViñeta){
+      if(!enLista){ html += '<ul style="margin:0 0 10px;padding-left:20px;">'; enLista=true; }
+      html += `<li style="margin-bottom:4px;">${t.replace(/^-\s+/,'')}</li>`;
+    }else{
+      if(enLista){ html += '</ul>'; enLista=false; }
+      html += `<p style="margin:0 0 10px;">${t}</p>`;
+    }
+  });
+  if(enLista) html += '</ul>';
+  return html || '<p>(Sin contenido)</p>';
+}
+function construirHtmlResumenClase(cl){
   const nombresClientes = cl.clienteIds.map(clienteNombre).join(', ');
   const perrosClase = cl.clienteIds.map(cid=>{
     const c = state.clientes.find(x=>x.id===cid);
     return c ? perrosResumen(c) : '';
   }).filter(Boolean).join(', ');
-  const subtitulo = `${nombresClientes}${perrosClase?' · '+perrosClase:''} · ${fmtDateLong(cl.fecha)}`;
-  const ctx = crearPdfDoc('Resumen de la clase', subtitulo);
-  if(!ctx) return null;
-  escribirParrafos(ctx, cl.resumenTexto || '(Sin contenido)', 11.5);
-  return ctx.doc;
+  const textoHtml = markdownBasicoAHtml(cl.resumenTexto);
+  return `
+  <div style="font-family:-apple-system,Arial,sans-serif;color:#23291F;padding:32px;line-height:1.6;">
+    <h1 style="font-family:Georgia,serif;color:#374C3D;margin:0 0 2px;font-size:24px;">Adiestra — Resumen de clase</h1>
+    <div style="color:#5B6154;margin-bottom:24px;font-size:13px;">${nombresClientes}${perrosClase?' · 🐾 '+perrosClase:''} · ${fmtDateLong(cl.fecha)}</div>
+    <div style="background:#F3EEE0;border-radius:14px;padding:22px;font-size:14px;">${textoHtml}</div>
+  </div>`;
 }
-function generarPdfResumenClase(claseId, {descargar=true, guardar=true}={}){
+async function construirDocResumenClase(cl){
+  const html = construirHtmlResumenClase(cl);
+  return await generarPdfDesdeHtml(html, `resumen-clase-${cl.fecha}.pdf`);
+}
+async function generarPdfResumenClase(claseId, {descargar=true, guardar=true}={}){
   const cl = state.clases.find(c=>c.id===claseId);
   if(!cl) return null;
-  const doc = construirDocResumenClase(cl);
+  toast('Generando PDF...');
+  const doc = await construirDocResumenClase(cl);
   if(!doc) return null;
   const nombreArchivo = `resumen-clase-${cl.fecha}.pdf`;
   if(descargar) descargarPdfDoc(doc, nombreArchivo);
@@ -1073,7 +1148,8 @@ function generarPdfResumenClase(claseId, {descargar=true, guardar=true}={}){
 async function compartirResumenWhatsApp(claseId){
   const cl = state.clases.find(c=>c.id===claseId);
   if(!cl) return;
-  const doc = construirDocResumenClase(cl);
+  toast('Preparando PDF para compartir...');
+  const doc = await construirDocResumenClase(cl);
   if(!doc) return;
   const pdfBlob = doc.output('blob');
   const file = new File([pdfBlob], `resumen-clase-${cl.fecha}.pdf`, {type:'application/pdf'});
@@ -1552,48 +1628,37 @@ function modalNuevoBono(clienteId){
     saveState(); toast('Bono creado'); modalFichaCliente(clienteId); render();
   });
 }
-function abrirEstadoCuenta(clienteId){
+async function abrirEstadoCuenta(clienteId){
   const c = state.clientes.find(x=>x.id===clienteId);
   if(!c) return;
   const clases = state.clases.filter(cl=>cl.clienteIds.includes(clienteId)).sort((a,b)=>a.fecha.localeCompare(b.fecha));
   const pagos = state.pagos.filter(p=>p.clienteId===clienteId).sort((a,b)=>a.fecha.localeCompare(b.fecha));
   const saldo = saldoCliente(clienteId);
   const saldoTxt = saldo>0? `${fmtMoney(saldo)} pendiente` : (saldo<0? `${fmtMoney(Math.abs(saldo))} a favor del cliente` : 'Al día');
-  const subtitulo = `${c.nombre}${c.coDueno?' & '+c.coDueno:''} · Generado el ${fmtDateLong(todayISO())}`;
-  const ctx = crearPdfDoc('Estado de cuenta', subtitulo);
-  if(!ctx) return;
-  ctx.doc.setFont('helvetica','bold');
-  ctx.doc.setFontSize(13);
-  ctx.doc.setTextColor(75,102,80);
-  ctx.doc.text(`Saldo actual: ${saldoTxt}`, ctx.margen, ctx.y);
-  ctx.y += 26;
-  ctx.doc.setFont('helvetica','bold');
-  ctx.doc.setFontSize(12);
-  ctx.doc.setTextColor(35,41,31);
-  ctx.doc.text('Clases', ctx.margen, ctx.y);
-  ctx.y += 16;
-  if(clases.length){
-    clases.forEach(cl=>{
-      escribirParrafos(ctx, `${fmtDate(cl.fecha)} · ${cl.horaInicio} · ${labelEstado(cl.estado)}${cl.precio?' · '+fmtMoney(cl.precio):''}`, 10.5);
-    });
-  }else{
-    escribirParrafos(ctx, 'Sin clases registradas.', 10.5);
-  }
-  ctx.y += 14;
-  ctx.doc.setFont('helvetica','bold');
-  ctx.doc.setFontSize(12);
-  ctx.doc.text('Pagos', ctx.margen, ctx.y);
-  ctx.y += 16;
-  if(pagos.length){
-    pagos.forEach(p=>{
-      escribirParrafos(ctx, `${fmtDate(p.fecha)} · ${fmtMoney(p.monto)} · ${p.metodo}${p.concepto?' · '+p.concepto:''}`, 10.5);
-    });
-  }else{
-    escribirParrafos(ctx, 'Sin pagos registrados.', 10.5);
-  }
+  const filasClases = clases.map(cl=>`<tr><td style="padding:8px 6px;border-bottom:1px solid #DCD3BE;font-size:13px;">${fmtDate(cl.fecha)}</td><td style="padding:8px 6px;border-bottom:1px solid #DCD3BE;font-size:13px;">${cl.horaInicio}</td><td style="padding:8px 6px;border-bottom:1px solid #DCD3BE;"><span style="padding:2px 8px;border-radius:999px;font-size:11px;background:#EFDFBB;color:#AD7C2C;">${labelEstado(cl.estado)}</span></td><td style="padding:8px 6px;border-bottom:1px solid #DCD3BE;font-size:13px;">${cl.precio?fmtMoney(cl.precio):'-'}</td></tr>`).join('') || `<tr><td colspan="4" style="padding:8px 6px;font-size:13px;">Sin clases registradas</td></tr>`;
+  const filasPagos = pagos.map(p=>`<tr><td style="padding:8px 6px;border-bottom:1px solid #DCD3BE;font-size:13px;">${fmtDate(p.fecha)}</td><td style="padding:8px 6px;border-bottom:1px solid #DCD3BE;font-size:13px;">${fmtMoney(p.monto)}</td><td style="padding:8px 6px;border-bottom:1px solid #DCD3BE;font-size:13px;">${p.metodo}</td><td style="padding:8px 6px;border-bottom:1px solid #DCD3BE;font-size:13px;">${p.concepto||'-'}</td></tr>`).join('') || `<tr><td colspan="4" style="padding:8px 6px;font-size:13px;">Sin pagos registrados</td></tr>`;
+  const html = `
+  <div style="font-family:-apple-system,Arial,sans-serif;color:#23291F;padding:32px;line-height:1.5;">
+    <h1 style="font-family:Georgia,serif;color:#374C3D;margin:0 0 2px;font-size:24px;">Adiestra — Estado de cuenta</h1>
+    <div style="color:#5B6154;margin-bottom:20px;font-size:13px;">${c.nombre}${c.coDueno?' &amp; '+c.coDueno:''} · Generado el ${fmtDateLong(todayISO())}</div>
+    <div style="font-size:19px;font-weight:bold;padding:16px 18px;background:#F3EEE0;border-radius:14px;margin-bottom:24px;color:#374C3D;">Saldo actual: ${saldoTxt}</div>
+    <h3 style="font-size:14px;color:#23291F;">Clases</h3>
+    <table style="width:100%;border-collapse:collapse;margin-bottom:22px;">
+      <tr><th style="text-align:left;padding:6px;font-size:11px;color:#5B6154;text-transform:uppercase;">Fecha</th><th style="text-align:left;padding:6px;font-size:11px;color:#5B6154;text-transform:uppercase;">Hora</th><th style="text-align:left;padding:6px;font-size:11px;color:#5B6154;text-transform:uppercase;">Estado</th><th style="text-align:left;padding:6px;font-size:11px;color:#5B6154;text-transform:uppercase;">Precio</th></tr>
+      ${filasClases}
+    </table>
+    <h3 style="font-size:14px;color:#23291F;">Pagos</h3>
+    <table style="width:100%;border-collapse:collapse;">
+      <tr><th style="text-align:left;padding:6px;font-size:11px;color:#5B6154;text-transform:uppercase;">Fecha</th><th style="text-align:left;padding:6px;font-size:11px;color:#5B6154;text-transform:uppercase;">Monto</th><th style="text-align:left;padding:6px;font-size:11px;color:#5B6154;text-transform:uppercase;">Método</th><th style="text-align:left;padding:6px;font-size:11px;color:#5B6154;text-transform:uppercase;">Concepto</th></tr>
+      ${filasPagos}
+    </table>
+  </div>`;
+  toast('Generando PDF...');
+  const doc = await generarPdfDesdeHtml(html);
+  if(!doc) return;
   const nombreArchivo = `estado-cuenta-${c.nombre.replace(/\s+/g,'-')}-${todayISO()}.pdf`;
-  descargarPdfDoc(ctx.doc, nombreArchivo);
-  guardarDocumentoCliente(clienteId, nombreArchivo, 'Estado de cuenta', ctx.doc);
+  descargarPdfDoc(doc, nombreArchivo);
+  guardarDocumentoCliente(clienteId, nombreArchivo, 'Estado de cuenta', doc);
   toast('PDF generado y guardado en Documentos');
 }
 
