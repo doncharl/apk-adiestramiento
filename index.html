@@ -362,8 +362,8 @@ const HABILIDADES_DEFECTO = [
 const ETIQUETAS_DEFECTO = [
   'Reactivo','Cachorro','Miedoso','No sociable con perros','Ansioso','Ladra mucho'
 ];
-const APP_VERSION = '1.17';
-const CAMBIOS_VERSION = 'Nueva funcion: foto de perfil para cada perro (camara o galeria), comprimida automaticamente para no ocupar mucho espacio. Se ve en la ficha del cliente y al editar el perro.';
+const APP_VERSION = '1.18';
+const CAMBIOS_VERSION = 'El PDF ahora tiene un recuadro con el color beige de la app detras del texto (en vez de fondo blanco plano), sin tocar el titulo ni la franja verde de arriba.';
 function migrarDatos(){
   if(!state.config) state.config = {fontSize:'md', darkMode:false};
   if(!state.config.razas) state.config.razas = [...RAZAS_DEFECTO];
@@ -500,14 +500,23 @@ function enviarConfirmacionWhatsApp(claseId, clienteId){
 const PDF_COLORES = {
   pine: [75,102,80], pineDark:[55,76,61], brass:[173,124,44], brassSoft:[239,223,187],
   brick:[161,70,47], brickSoft:[242,220,212], greenOk:[63,107,73], greenOkSoft:[220,232,220],
-  violeta:[91,78,150], violetaSoft:[228,224,240], surface2:[243,238,224], ink:[35,41,31], inkSoft:[91,97,84]
+  violeta:[91,78,150], violetaSoft:[228,224,240], surface2:[243,238,224], ink:[35,41,31], inkSoft:[91,97,84],
+  bg:[239,233,220]
 };
+function pdfDibujarFondoPagina(ctx, esPrimeraPagina){
+  const inicioY = esPrimeraPagina ? 104 : 30;
+  const finY = ctx.pageH - 32;
+  ctx.doc.setFillColor(...PDF_COLORES.bg);
+  ctx.doc.roundedRect(24, inicioY, ctx.pageW-48, finY-inicioY, 12, 12, 'F');
+}
 function nuevoPdfConTitulo(titulo, subtitulo){
   if(!window.jspdf){ toast('No se pudo cargar el generador de PDF. Verifica tu internet.'); return null; }
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit:'pt', format:'a4' });
   const pageW = doc.internal.pageSize.getWidth();
   const margen = 46;
+  const ctx = { doc, margen, y: 132, pageW, pageH: doc.internal.pageSize.getHeight(), anchoUtil: pageW-margen*2 };
+  pdfDibujarFondoPagina(ctx, true);
   doc.setFillColor(...PDF_COLORES.pine);
   doc.rect(0, 0, pageW, 92, 'F');
   doc.setFont('helvetica','bold');
@@ -522,12 +531,13 @@ function nuevoPdfConTitulo(titulo, subtitulo){
     doc.setTextColor(230,230,220);
     doc.text(subtitulo, margen, 78);
   }
-  return { doc, margen, y: 122, pageW, pageH: doc.internal.pageSize.getHeight(), anchoUtil: pageW-margen*2 };
+  return ctx;
 }
 function pdfSaltoDePagina(ctx, alturaNecesaria){
   if(ctx.y + alturaNecesaria > ctx.pageH - 44){
     ctx.doc.addPage();
-    ctx.y = 50;
+    ctx.y = 64;
+    pdfDibujarFondoPagina(ctx, false);
   }
 }
 function pdfSeccionTitulo(ctx, texto, color){
