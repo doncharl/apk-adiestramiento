@@ -9,7 +9,6 @@
 <link rel="apple-touch-icon" href="icon-192.png">
 <meta name="theme-color" content="#4B6650">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <style>
   :root{
     --bg:#EFE9DC;
@@ -329,6 +328,27 @@ function loadState(){
 }
 function saveState(){ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
+function comprimirImagen(file, maxDim, calidad){
+  return new Promise((resolve, reject)=>{
+    const reader = new FileReader();
+    reader.onload = (e)=>{
+      const img = new Image();
+      img.onload = ()=>{
+        let w = img.width, h = img.height;
+        if(w>h){ if(w>maxDim){ h = Math.round(h*maxDim/w); w = maxDim; } }
+        else{ if(h>maxDim){ w = Math.round(w*maxDim/h); h = maxDim; } }
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL('image/jpeg', calidad||0.72));
+      };
+      img.onerror = ()=>reject(new Error('No se pudo leer la imagen'));
+      img.src = e.target.result;
+    };
+    reader.onerror = ()=>reject(new Error('No se pudo leer el archivo'));
+    reader.readAsDataURL(file);
+  });
+}
 
 const RAZAS_DEFECTO = [
   'Criollo / Mestizo','Labrador Retriever','Golden Retriever','French Poodle (Caniche)',
@@ -342,8 +362,8 @@ const HABILIDADES_DEFECTO = [
 const ETIQUETAS_DEFECTO = [
   'Reactivo','Cachorro','Miedoso','No sociable con perros','Ansioso','Ladra mucho'
 ];
-const APP_VERSION = '1.15';
-const CAMBIOS_VERSION = 'Los PDF (estado de cuenta y resumen de clase) ahora conservan el diseno bonito con colores y tarjetas, en vez de texto plano. El resumen con IA usa un formato mas completo y estructurado (fecha, perro, dueno, trabajo del dia, tareas para casa, proximos pasos).';
+const APP_VERSION = '1.17';
+const CAMBIOS_VERSION = 'Nueva funcion: foto de perfil para cada perro (camara o galeria), comprimida automaticamente para no ocupar mucho espacio. Se ve en la ficha del cliente y al editar el perro.';
 function migrarDatos(){
   if(!state.config) state.config = {fontSize:'md', darkMode:false};
   if(!state.config.razas) state.config.razas = [...RAZAS_DEFECTO];
@@ -356,6 +376,7 @@ function migrarDatos(){
       if(p.fechaVacuna===undefined) p.fechaVacuna = '';
       if(!p.habilidades) p.habilidades = HABILIDADES_DEFECTO.map(n=>({id:uid(), nombre:n, estado:'por_trabajar'}));
       if(!p.etiquetas) p.etiquetas = [];
+      if(p.foto===undefined) p.foto = '';
     });
     if(!c.estado) c.estado = (c.activo===false) ? 'terminado' : 'en_proceso';
     if(!c.bonos) c.bonos = [];
@@ -424,6 +445,13 @@ function etiquetasBadgesHTML(p){
   if(!p.etiquetas || !p.etiquetas.length) return '';
   return `<div style="margin-top:4px;">${p.etiquetas.map(e=>`<span class="badge" style="background:var(--brick-soft);color:var(--brick);margin-right:4px;margin-bottom:4px;display:inline-block;">${e}</span>`).join('')}</div>`;
 }
+function fotoPerroThumbHTML(p, size){
+  size = size || 36;
+  if(p.foto){
+    return `<img src="${p.foto}" style="width:${size}px;height:${size}px;border-radius:50%;object-fit:cover;flex-shrink:0;">`;
+  }
+  return `<div style="width:${size}px;height:${size}px;border-radius:50%;background:var(--surface-2);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:${Math.round(size*0.5)}px;">🐾</div>`;
+}
 function telefonoWhatsApp(tel){
   let limpio = (tel||'').replace(/[^\d]/g,'');
   if(limpio.length===10) limpio = '57'+limpio;
@@ -468,41 +496,135 @@ function enviarConfirmacionWhatsApp(claseId, clienteId){
   window.open(`https://wa.me/${numero}?text=${encodeURIComponent(texto)}`, '_blank');
 }
 
-/* ---------- Generación de PDFs reales, guardados por cliente ---------- */
-async function generarPdfDesdeHtml(htmlInterior, nombreArchivo){
-  if(!window.jspdf || !window.html2canvas){ toast('No se pudo cargar el generador de PDF. Verifica tu internet.'); return null; }
-  const contenedor = document.createElement('div');
-  contenedor.style.position = 'fixed';
-  contenedor.style.left = '-9999px';
-  contenedor.style.top = '0';
-  contenedor.style.width = '650px';
-  contenedor.style.background = '#ffffff';
-  contenedor.innerHTML = htmlInterior;
-  document.body.appendChild(contenedor);
-  let pdf;
-  try{
-    const canvas = await window.html2canvas(contenedor, { scale:2, backgroundColor:'#ffffff', useCORS:true });
-    const imgData = canvas.toDataURL('image/jpeg', 0.95);
-    const { jsPDF } = window.jspdf;
-    pdf = new jsPDF({ unit:'pt', format:'a4' });
-    const pageWidth = pdf.internal.pageSize.getWidth();
-    const pageHeight = pdf.internal.pageSize.getHeight();
-    const imgWidth = pageWidth;
-    const imgHeight = canvas.height * imgWidth / canvas.width;
-    let heightLeft = imgHeight;
-    let position = 0;
-    pdf.addImage(imgData, 'JPEG', 0, position, imgWidth, imgHeight);
-    heightLeft -= pageHeight;
-    while(heightLeft > 0){
-      position = heightLeft - imgHeight;
-      pdf.addPage();
-      pdf.addImage(imgData, 'JPEG', 0, position, imgWidth, imgHeight);
-      heightLeft -= pageHeight;
-    }
-  } finally {
-    document.body.removeChild(contenedor);
+/* ---------- Motor de PDF con colores y estilo, sin depender de captura de pantalla ---------- */
+const PDF_COLORES = {
+  pine: [75,102,80], pineDark:[55,76,61], brass:[173,124,44], brassSoft:[239,223,187],
+  brick:[161,70,47], brickSoft:[242,220,212], greenOk:[63,107,73], greenOkSoft:[220,232,220],
+  violeta:[91,78,150], violetaSoft:[228,224,240], surface2:[243,238,224], ink:[35,41,31], inkSoft:[91,97,84]
+};
+function nuevoPdfConTitulo(titulo, subtitulo){
+  if(!window.jspdf){ toast('No se pudo cargar el generador de PDF. Verifica tu internet.'); return null; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit:'pt', format:'a4' });
+  const pageW = doc.internal.pageSize.getWidth();
+  const margen = 46;
+  doc.setFillColor(...PDF_COLORES.pine);
+  doc.rect(0, 0, pageW, 92, 'F');
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(21);
+  doc.setTextColor(...PDF_COLORES.brassSoft);
+  doc.text('Adiestra', margen, 40);
+  doc.setFontSize(13);
+  doc.text(titulo, margen, 62);
+  if(subtitulo){
+    doc.setFont('helvetica','normal');
+    doc.setFontSize(9.5);
+    doc.setTextColor(230,230,220);
+    doc.text(subtitulo, margen, 78);
   }
-  return pdf;
+  return { doc, margen, y: 122, pageW, pageH: doc.internal.pageSize.getHeight(), anchoUtil: pageW-margen*2 };
+}
+function pdfSaltoDePagina(ctx, alturaNecesaria){
+  if(ctx.y + alturaNecesaria > ctx.pageH - 44){
+    ctx.doc.addPage();
+    ctx.y = 50;
+  }
+}
+function pdfSeccionTitulo(ctx, texto, color){
+  color = color || PDF_COLORES.pineDark;
+  pdfSaltoDePagina(ctx, 34);
+  ctx.y += 8;
+  ctx.doc.setFillColor(...color);
+  ctx.doc.roundedRect(ctx.margen, ctx.y-11, 4, 16, 2, 2, 'F');
+  ctx.doc.setFont('helvetica','bold');
+  ctx.doc.setFontSize(12.5);
+  ctx.doc.setTextColor(...color);
+  ctx.doc.text(texto, ctx.margen+12, ctx.y);
+  ctx.y += 18;
+}
+function pdfParrafo(ctx, texto, opts){
+  opts = opts || {};
+  const fontSize = opts.fontSize || 10.5;
+  ctx.doc.setFont('helvetica', opts.bold?'bold':'normal');
+  ctx.doc.setFontSize(fontSize);
+  ctx.doc.setTextColor(...(opts.color||PDF_COLORES.ink));
+  const indent = opts.indent || 0;
+  const lineas = ctx.doc.splitTextToSize(texto, ctx.anchoUtil-indent);
+  lineas.forEach(linea=>{
+    pdfSaltoDePagina(ctx, fontSize*1.4);
+    ctx.doc.text(linea, ctx.margen+indent, ctx.y);
+    ctx.y += fontSize*1.42;
+  });
+}
+function pdfVineta(ctx, texto, color){
+  color = color || PDF_COLORES.brass;
+  pdfSaltoDePagina(ctx, 16);
+  ctx.doc.setFillColor(...color);
+  ctx.doc.circle(ctx.margen+4, ctx.y-3.5, 2.4, 'F');
+  ctx.doc.setFont('helvetica','normal');
+  ctx.doc.setFontSize(10.5);
+  ctx.doc.setTextColor(...PDF_COLORES.ink);
+  const lineas = ctx.doc.splitTextToSize(texto, ctx.anchoUtil-16);
+  lineas.forEach((linea,i)=>{
+    if(i>0) pdfSaltoDePagina(ctx, 15);
+    ctx.doc.text(linea, ctx.margen+14, ctx.y);
+    ctx.y += 15;
+  });
+  ctx.y += 3;
+}
+function pdfCajaDestacada(ctx, texto, colorFondo, colorTexto){
+  pdfSaltoDePagina(ctx, 40);
+  ctx.doc.setFillColor(...(colorFondo||PDF_COLORES.surface2));
+  ctx.doc.roundedRect(ctx.margen, ctx.y-20, ctx.anchoUtil, 34, 8, 8, 'F');
+  ctx.doc.setFont('helvetica','bold');
+  ctx.doc.setFontSize(13.5);
+  ctx.doc.setTextColor(...(colorTexto||PDF_COLORES.pineDark));
+  ctx.doc.text(texto, ctx.margen+14, ctx.y+2);
+  ctx.y += 34;
+}
+function pdfBadgeColor(nivel){
+  if(nivel==='completada' || nivel==='ok') return {bg:PDF_COLORES.greenOkSoft, fg:PDF_COLORES.greenOk};
+  if(nivel==='cancelada' || nivel==='vencida') return {bg:PDF_COLORES.brickSoft, fg:PDF_COLORES.brick};
+  if(nivel==='reprogramada') return {bg:PDF_COLORES.violetaSoft, fg:PDF_COLORES.violeta};
+  return {bg:PDF_COLORES.brassSoft, fg:PDF_COLORES.brass};
+}
+function pdfFilaConBadge(ctx, textoIzq, textoBadge, nivelBadge, textoDer){
+  pdfSaltoDePagina(ctx, 20);
+  ctx.doc.setFont('helvetica','normal');
+  ctx.doc.setFontSize(10.5);
+  ctx.doc.setTextColor(...PDF_COLORES.ink);
+  ctx.doc.text(textoIzq, ctx.margen, ctx.y);
+  const colores = pdfBadgeColor(nivelBadge);
+  const anchoBadge = ctx.doc.getTextWidth(textoBadge)+14;
+  const xBadge = ctx.margen + 190;
+  ctx.doc.setFillColor(...colores.bg);
+  ctx.doc.roundedRect(xBadge, ctx.y-10, anchoBadge, 14, 7, 7, 'F');
+  ctx.doc.setFontSize(8.5);
+  ctx.doc.setTextColor(...colores.fg);
+  ctx.doc.text(textoBadge, xBadge+7, ctx.y);
+  if(textoDer){
+    ctx.doc.setFontSize(10.5);
+    ctx.doc.setTextColor(...PDF_COLORES.ink);
+    ctx.doc.text(textoDer, ctx.pageW-ctx.margen, ctx.y, {align:'right'});
+  }
+  ctx.y += 20;
+}
+function markdownAPdf(ctx, texto){
+  const lineas = (texto||'').split('\n');
+  let huboContenido = false;
+  lineas.forEach(linea=>{
+    const t = linea.trim();
+    if(!t) return;
+    huboContenido = true;
+    if(/^\*\*(.+)\*\*$/.test(t)){
+      pdfSeccionTitulo(ctx, t.replace(/^\*\*(.+)\*\*$/, '$1'));
+    }else if(/^-\s+/.test(t)){
+      pdfVineta(ctx, t.replace(/^-\s+/,''));
+    }else{
+      pdfParrafo(ctx, t);
+    }
+  });
+  if(!huboContenido) pdfParrafo(ctx, '(Sin contenido)');
 }
 function guardarDocumentoCliente(clienteId, nombreArchivo, tipo, doc){
   const c = state.clientes.find(x=>x.id===clienteId);
@@ -1088,53 +1210,22 @@ ${textoOriginal}`;
   if(compartirBtn) compartirBtn.addEventListener('click', ()=> compartirResumenWhatsApp(claseId));
 }
 
-function markdownBasicoAHtml(texto){
-  const lineas = (texto||'').split('\n');
-  let html = '';
-  let enLista = false;
-  lineas.forEach(linea=>{
-    const t = linea.trim();
-    if(!t){ return; }
-    const esTitulo = /^\*\*(.+)\*\*$/.test(t);
-    const esViñeta = /^-\s+/.test(t);
-    if(esTitulo){
-      if(enLista){ html += '</ul>'; enLista=false; }
-      const contenido = t.replace(/^\*\*(.+)\*\*$/, '$1');
-      html += `<h3 style="font-size:14.5px;color:#374C3D;margin:16px 0 6px;">${contenido}</h3>`;
-    }else if(esViñeta){
-      if(!enLista){ html += '<ul style="margin:0 0 10px;padding-left:20px;">'; enLista=true; }
-      html += `<li style="margin-bottom:4px;">${t.replace(/^-\s+/,'')}</li>`;
-    }else{
-      if(enLista){ html += '</ul>'; enLista=false; }
-      html += `<p style="margin:0 0 10px;">${t}</p>`;
-    }
-  });
-  if(enLista) html += '</ul>';
-  return html || '<p>(Sin contenido)</p>';
-}
-function construirHtmlResumenClase(cl){
+function construirDocResumenClase(cl){
   const nombresClientes = cl.clienteIds.map(clienteNombre).join(', ');
   const perrosClase = cl.clienteIds.map(cid=>{
     const c = state.clientes.find(x=>x.id===cid);
     return c ? perrosResumen(c) : '';
   }).filter(Boolean).join(', ');
-  const textoHtml = markdownBasicoAHtml(cl.resumenTexto);
-  return `
-  <div style="font-family:-apple-system,Arial,sans-serif;color:#23291F;padding:32px;line-height:1.6;">
-    <h1 style="font-family:Georgia,serif;color:#374C3D;margin:0 0 2px;font-size:24px;">Adiestra — Resumen de clase</h1>
-    <div style="color:#5B6154;margin-bottom:24px;font-size:13px;">${nombresClientes}${perrosClase?' · 🐾 '+perrosClase:''} · ${fmtDateLong(cl.fecha)}</div>
-    <div style="background:#F3EEE0;border-radius:14px;padding:22px;font-size:14px;">${textoHtml}</div>
-  </div>`;
+  const subtitulo = `${nombresClientes}${perrosClase?' · '+perrosClase:''} · ${fmtDateLong(cl.fecha)}`;
+  const ctx = nuevoPdfConTitulo('Resumen de la clase', subtitulo);
+  if(!ctx) return null;
+  markdownAPdf(ctx, cl.resumenTexto);
+  return ctx.doc;
 }
-async function construirDocResumenClase(cl){
-  const html = construirHtmlResumenClase(cl);
-  return await generarPdfDesdeHtml(html, `resumen-clase-${cl.fecha}.pdf`);
-}
-async function generarPdfResumenClase(claseId, {descargar=true, guardar=true}={}){
+function generarPdfResumenClase(claseId, {descargar=true, guardar=true}={}){
   const cl = state.clases.find(c=>c.id===claseId);
   if(!cl) return null;
-  toast('Generando PDF...');
-  const doc = await construirDocResumenClase(cl);
+  const doc = construirDocResumenClase(cl);
   if(!doc) return null;
   const nombreArchivo = `resumen-clase-${cl.fecha}.pdf`;
   if(descargar) descargarPdfDoc(doc, nombreArchivo);
@@ -1148,8 +1239,7 @@ async function generarPdfResumenClase(claseId, {descargar=true, guardar=true}={}
 async function compartirResumenWhatsApp(claseId){
   const cl = state.clases.find(c=>c.id===claseId);
   if(!cl) return;
-  toast('Preparando PDF para compartir...');
-  const doc = await construirDocResumenClase(cl);
+  const doc = construirDocResumenClase(cl);
   if(!doc) return;
   const pdfBlob = doc.output('blob');
   const file = new File([pdfBlob], `resumen-clase-${cl.fecha}.pdf`, {type:'application/pdf'});
@@ -1230,7 +1320,10 @@ function modalNuevoCliente(clienteId){
     ${(c.perros&&c.perros.length)? c.perros.map(p=>`
       <div class="perro-card">
         <div class="row">
-          <strong>${p.nombre}</strong>
+          <div style="display:flex;align-items:center;gap:10px;">
+            ${fotoPerroThumbHTML(p)}
+            <strong>${p.nombre}</strong>
+          </div>
           <div>
             <button class="btn ghost small" data-editperro="${p.id}">Editar</button>
             <button class="btn ghost small" data-delperro="${p.id}">Borrar</button>
@@ -1297,6 +1390,13 @@ function modalPerro(clienteId, perroId){
   const p = perroId ? c.perros.find(x=>x.id===perroId) : null;
   const razaEsPersonalizada = p && p.raza && !state.config.razas.includes(p.raza);
   openModal(p?'Editar perro':'Nuevo perro', `
+    <div style="text-align:center;margin-bottom:14px;">
+      <img id="pp_fotoPreview" src="${p&&p.foto?p.foto:''}" style="width:88px;height:88px;border-radius:50%;object-fit:cover;background:var(--surface-2);display:${p&&p.foto?'block':'none'};margin:0 auto 8px;border:2px solid var(--line);">
+      <div id="pp_fotoPlaceholder" style="width:88px;height:88px;border-radius:50%;background:var(--surface-2);display:${p&&p.foto?'none':'flex'};align-items:center;justify-content:center;margin:0 auto 8px;font-size:28px;">🐾</div>
+      <input type="file" id="pp_foto" accept="image/*" style="display:none;">
+      <button type="button" class="btn secondary small" id="pp_fotoBtn">${p&&p.foto?'Cambiar foto':'Agregar foto'}</button>
+      ${p&&p.foto? '<button type="button" class="btn ghost small" id="pp_fotoQuitar">Quitar foto</button>' : ''}
+    </div>
     <label>Nombre del perro</label>
     <input type="text" id="pp_nombre" value="${p?p.nombre:''}" placeholder="Ej: Toby">
     <label>Raza</label>
@@ -1344,6 +1444,31 @@ function modalPerro(clienteId, perroId){
   document.getElementById('pp_raza').addEventListener('change', (e)=>{
     document.getElementById('pp_raza_otra').style.display = e.target.value==='__otra__' ? 'block':'none';
   });
+  let fotoTemp = p && p.foto ? p.foto : '';
+  document.getElementById('pp_fotoBtn').addEventListener('click', ()=>{
+    document.getElementById('pp_foto').click();
+  });
+  document.getElementById('pp_foto').addEventListener('change', async (e)=>{
+    const file = e.target.files[0];
+    if(!file) return;
+    toast('Procesando foto...');
+    try{
+      fotoTemp = await comprimirImagen(file, 300, 0.72);
+      const preview = document.getElementById('pp_fotoPreview');
+      preview.src = fotoTemp;
+      preview.style.display = 'block';
+      document.getElementById('pp_fotoPlaceholder').style.display = 'none';
+      toast('Foto lista');
+    }catch(err){
+      toast('No se pudo procesar la foto');
+    }
+  });
+  const quitarFotoBtn = document.getElementById('pp_fotoQuitar');
+  if(quitarFotoBtn) quitarFotoBtn.addEventListener('click', ()=>{
+    fotoTemp = '';
+    document.getElementById('pp_fotoPreview').style.display = 'none';
+    document.getElementById('pp_fotoPlaceholder').style.display = 'flex';
+  });
   if(p){
     document.querySelectorAll('[data-hab]').forEach(el=>{
       el.addEventListener('click', ()=>{
@@ -1377,6 +1502,7 @@ function modalPerro(clienteId, perroId){
     const data = {
       nombre,
       raza,
+      foto: fotoTemp,
       fechaNacimiento: document.getElementById('pp_nacimiento').value,
       fechaVacuna: document.getElementById('pp_vacuna').value,
       notas: document.getElementById('pp_notas').value.trim(),
@@ -1439,7 +1565,10 @@ function modalFichaCliente(clienteId){
     <div class="section-title">Perros (${(c.perros||[]).length})</div>
     ${(c.perros&&c.perros.length)? c.perros.map(p=>`
       <div class="perro-card">
-        <strong>${p.nombre}</strong>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:2px;">
+          ${fotoPerroThumbHTML(p)}
+          <strong>${p.nombre}</strong>
+        </div>
         <div class="muted">${p.raza?p.raza+' · ':''}${calcularEdadTexto(p.fechaNacimiento)}</div>
         ${(()=>{ const v=estadoVacuna(p.fechaVacuna); if(!v) return ''; const color=v.nivel==='vencida'?'var(--brick)':v.nivel==='pronto'?'var(--brass)':'var(--ink-soft)'; const txt=v.nivel==='vencida'?'Vacuna vencida':v.nivel==='pronto'?'Vacuna vence pronto':'Vacuna al día'; return `<div style="font-size:12px;color:${color};margin-top:2px;">${txt} (${fmtDate(v.proximaISO)})</div>`; })()}
         ${resumenHabilidades(p)?`<div class="muted" style="margin-top:2px;">${resumenHabilidades(p)}</div>`:''}
@@ -1628,37 +1757,41 @@ function modalNuevoBono(clienteId){
     saveState(); toast('Bono creado'); modalFichaCliente(clienteId); render();
   });
 }
-async function abrirEstadoCuenta(clienteId){
+function abrirEstadoCuenta(clienteId){
   const c = state.clientes.find(x=>x.id===clienteId);
   if(!c) return;
   const clases = state.clases.filter(cl=>cl.clienteIds.includes(clienteId)).sort((a,b)=>a.fecha.localeCompare(b.fecha));
   const pagos = state.pagos.filter(p=>p.clienteId===clienteId).sort((a,b)=>a.fecha.localeCompare(b.fecha));
   const saldo = saldoCliente(clienteId);
-  const saldoTxt = saldo>0? `${fmtMoney(saldo)} pendiente` : (saldo<0? `${fmtMoney(Math.abs(saldo))} a favor del cliente` : 'Al día');
-  const filasClases = clases.map(cl=>`<tr><td style="padding:8px 6px;border-bottom:1px solid #DCD3BE;font-size:13px;">${fmtDate(cl.fecha)}</td><td style="padding:8px 6px;border-bottom:1px solid #DCD3BE;font-size:13px;">${cl.horaInicio}</td><td style="padding:8px 6px;border-bottom:1px solid #DCD3BE;"><span style="padding:2px 8px;border-radius:999px;font-size:11px;background:#EFDFBB;color:#AD7C2C;">${labelEstado(cl.estado)}</span></td><td style="padding:8px 6px;border-bottom:1px solid #DCD3BE;font-size:13px;">${cl.precio?fmtMoney(cl.precio):'-'}</td></tr>`).join('') || `<tr><td colspan="4" style="padding:8px 6px;font-size:13px;">Sin clases registradas</td></tr>`;
-  const filasPagos = pagos.map(p=>`<tr><td style="padding:8px 6px;border-bottom:1px solid #DCD3BE;font-size:13px;">${fmtDate(p.fecha)}</td><td style="padding:8px 6px;border-bottom:1px solid #DCD3BE;font-size:13px;">${fmtMoney(p.monto)}</td><td style="padding:8px 6px;border-bottom:1px solid #DCD3BE;font-size:13px;">${p.metodo}</td><td style="padding:8px 6px;border-bottom:1px solid #DCD3BE;font-size:13px;">${p.concepto||'-'}</td></tr>`).join('') || `<tr><td colspan="4" style="padding:8px 6px;font-size:13px;">Sin pagos registrados</td></tr>`;
-  const html = `
-  <div style="font-family:-apple-system,Arial,sans-serif;color:#23291F;padding:32px;line-height:1.5;">
-    <h1 style="font-family:Georgia,serif;color:#374C3D;margin:0 0 2px;font-size:24px;">Adiestra — Estado de cuenta</h1>
-    <div style="color:#5B6154;margin-bottom:20px;font-size:13px;">${c.nombre}${c.coDueno?' &amp; '+c.coDueno:''} · Generado el ${fmtDateLong(todayISO())}</div>
-    <div style="font-size:19px;font-weight:bold;padding:16px 18px;background:#F3EEE0;border-radius:14px;margin-bottom:24px;color:#374C3D;">Saldo actual: ${saldoTxt}</div>
-    <h3 style="font-size:14px;color:#23291F;">Clases</h3>
-    <table style="width:100%;border-collapse:collapse;margin-bottom:22px;">
-      <tr><th style="text-align:left;padding:6px;font-size:11px;color:#5B6154;text-transform:uppercase;">Fecha</th><th style="text-align:left;padding:6px;font-size:11px;color:#5B6154;text-transform:uppercase;">Hora</th><th style="text-align:left;padding:6px;font-size:11px;color:#5B6154;text-transform:uppercase;">Estado</th><th style="text-align:left;padding:6px;font-size:11px;color:#5B6154;text-transform:uppercase;">Precio</th></tr>
-      ${filasClases}
-    </table>
-    <h3 style="font-size:14px;color:#23291F;">Pagos</h3>
-    <table style="width:100%;border-collapse:collapse;">
-      <tr><th style="text-align:left;padding:6px;font-size:11px;color:#5B6154;text-transform:uppercase;">Fecha</th><th style="text-align:left;padding:6px;font-size:11px;color:#5B6154;text-transform:uppercase;">Monto</th><th style="text-align:left;padding:6px;font-size:11px;color:#5B6154;text-transform:uppercase;">Método</th><th style="text-align:left;padding:6px;font-size:11px;color:#5B6154;text-transform:uppercase;">Concepto</th></tr>
-      ${filasPagos}
-    </table>
-  </div>`;
-  toast('Generando PDF...');
-  const doc = await generarPdfDesdeHtml(html);
-  if(!doc) return;
+  const saldoTxt = saldo>0? `Saldo actual: ${fmtMoney(saldo)} pendiente` : (saldo<0? `Saldo actual: ${fmtMoney(Math.abs(saldo))} a favor del cliente` : 'Saldo actual: Al día');
+  const subtitulo = `${c.nombre}${c.coDueno?' & '+c.coDueno:''} · Generado el ${fmtDateLong(todayISO())}`;
+  const ctx = nuevoPdfConTitulo('Estado de cuenta', subtitulo);
+  if(!ctx) return;
+  const colorSaldo = saldo>0 ? PDF_COLORES.brickSoft : (saldo<0 ? PDF_COLORES.greenOkSoft : PDF_COLORES.surface2);
+  const colorSaldoTxt = saldo>0 ? PDF_COLORES.brick : (saldo<0 ? PDF_COLORES.greenOk : PDF_COLORES.pineDark);
+  pdfCajaDestacada(ctx, saldoTxt, colorSaldo, colorSaldoTxt);
+  ctx.y += 8;
+  pdfSeccionTitulo(ctx, 'Clases');
+  if(clases.length){
+    clases.forEach(cl=>{
+      const nivel = cl.estado==='completada'?'completada':(cl.estado==='cancelada'?'cancelada':(cl.estado==='reprogramada'?'reprogramada':'programada'));
+      pdfFilaConBadge(ctx, `${fmtDate(cl.fecha)} · ${cl.horaInicio}`, labelEstado(cl.estado), nivel, cl.precio?fmtMoney(cl.precio):'-');
+    });
+  }else{
+    pdfParrafo(ctx, 'Sin clases registradas.', {color:PDF_COLORES.inkSoft});
+  }
+  ctx.y += 6;
+  pdfSeccionTitulo(ctx, 'Pagos');
+  if(pagos.length){
+    pagos.forEach(p=>{
+      pdfParrafo(ctx, `${fmtDate(p.fecha)} · ${fmtMoney(p.monto)} · ${p.metodo}${p.concepto?' · '+p.concepto:''}`);
+    });
+  }else{
+    pdfParrafo(ctx, 'Sin pagos registrados.', {color:PDF_COLORES.inkSoft});
+  }
   const nombreArchivo = `estado-cuenta-${c.nombre.replace(/\s+/g,'-')}-${todayISO()}.pdf`;
-  descargarPdfDoc(doc, nombreArchivo);
-  guardarDocumentoCliente(clienteId, nombreArchivo, 'Estado de cuenta', doc);
+  descargarPdfDoc(ctx.doc, nombreArchivo);
+  guardarDocumentoCliente(clienteId, nombreArchivo, 'Estado de cuenta', ctx.doc);
   toast('PDF generado y guardado en Documentos');
 }
 
