@@ -362,8 +362,8 @@ const HABILIDADES_DEFECTO = [
 const ETIQUETAS_DEFECTO = [
   'Reactivo','Cachorro','Miedoso','No sociable con perros','Ansioso','Ladra mucho'
 ];
-const APP_VERSION = '1.18';
-const CAMBIOS_VERSION = 'El PDF ahora tiene un recuadro con el color beige de la app detras del texto (en vez de fondo blanco plano), sin tocar el titulo ni la franja verde de arriba.';
+const APP_VERSION = '1.19';
+const CAMBIOS_VERSION = 'Fotos de perro visibles en Clientes, Agenda y al elegir cliente en una clase nueva. Al crear una clase ahora se compara con la hora exacta del celular (no solo la fecha) para marcarla completada automaticamente. Cada pago tiene boton Editar/Recibo para generar un PDF de comprobante, guardado en Documentos del cliente.';
 function migrarDatos(){
   if(!state.config) state.config = {fontSize:'md', darkMode:false};
   if(!state.config.razas) state.config.razas = [...RAZAS_DEFECTO];
@@ -427,6 +427,10 @@ function addDias(iso, dias){
   d.setDate(d.getDate()+dias);
   return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate());
 }
+function fechaHoraYaPaso(fecha, hora){
+  const fechaHora = new Date(`${fecha}T${hora||'00:00'}:00`);
+  return fechaHora.getTime() < Date.now();
+}
 function estadoVacuna(fechaVacuna){
   if(!fechaVacuna) return null;
   const proximaISO = addDias(fechaVacuna, 365);
@@ -451,6 +455,14 @@ function fotoPerroThumbHTML(p, size){
     return `<img src="${p.foto}" style="width:${size}px;height:${size}px;border-radius:50%;object-fit:cover;flex-shrink:0;">`;
   }
   return `<div style="width:${size}px;height:${size}px;border-radius:50%;background:var(--surface-2);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:${Math.round(size*0.5)}px;">🐾</div>`;
+}
+function perrosConFotoHTML(c, size){
+  size = size || 22;
+  if(!c.perros || !c.perros.length) return '';
+  return `<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;">${c.perros.map(p=>`
+    <span style="display:inline-flex;align-items:center;gap:5px;">
+      ${fotoPerroThumbHTML(p, size)}<span>${p.nombre}</span>
+    </span>`).join('')}</div>`;
 }
 function telefonoWhatsApp(tel){
   let limpio = (tel||'').replace(/[^\d]/g,'');
@@ -818,8 +830,8 @@ function viewAgenda(){
     claseDelDia.forEach(cl=>{
       const detalleClientes = cl.clienteIds.map(cid=>{
         const c = state.clientes.find(x=>x.id===cid);
-        const perros = c ? perrosResumen(c) : '';
-        return `<div>${clienteNombre(cid)}${perros?`<div class="muted" style="font-size:11.5px;margin-top:1px;">🐾 ${perros}</div>`:''}</div>`;
+        const perrosHtml = c ? perrosConFotoHTML(c,18) : '';
+        return `<div style="margin-bottom:4px;"><span>${clienteNombre(cid)}</span>${perrosHtml?`<div style="margin-top:3px;font-size:11.5px;">${perrosHtml}</div>`:''}</div>`;
       }).join('') || '(sin clientes)';
       html += `
       <div class="card tap" data-open-clase="${cl.id}">
@@ -884,7 +896,7 @@ function modalNuevaClase(claseId, presetDate){
     <label>Clientes en esta clase</label>
     <div class="muted" style="margin:-3px 0 6px;">Individual: solo un cliente · Grupal: puedes elegir varios</div>
     <div class="chip-row" id="f_clientes">
-      ${clientesOpts.length? clientesOpts.map(c=>`<span class="chip ${seleccionados.includes(c.id)?'selected':''}" data-val="${c.id}">${c.nombre}${c.perros&&c.perros[0]?' ('+c.perros[0].nombre+')':''}</span>`).join(''):'<span class="muted">No tienes clientes aún — crea uno primero en la pestaña Clientes.</span>'}
+      ${clientesOpts.length? clientesOpts.map(c=>`<span class="chip ${seleccionados.includes(c.id)?'selected':''}" style="display:inline-flex;align-items:center;gap:6px;" data-val="${c.id}">${c.perros&&c.perros[0]?fotoPerroThumbHTML(c.perros[0],16):''}<span>${c.nombre}${c.perros&&c.perros[0]?' ('+c.perros[0].nombre+')':''}</span></span>`).join(''):'<span class="muted">No tienes clientes aún — crea uno primero en la pestaña Clientes.</span>'}
     </div>
     <label>Precio de la clase (por cliente)</label>
     <input type="number" id="f_precio" placeholder="0" value="${cl?cl.precio||'':''}">
@@ -913,13 +925,14 @@ function modalNuevaClase(claseId, presetDate){
     }
   });
   document.getElementById('f_clientes').addEventListener('click', e=>{
-    if(!e.target.classList.contains('chip')) return;
+    const chip = e.target.closest('.chip');
+    if(!chip) return;
     const tipoActual = document.querySelector('#f_tipo .chip.selected')?.dataset.val || 'individual';
     if(tipoActual==='individual'){
       document.querySelectorAll('#f_clientes .chip').forEach(c=>c.classList.remove('selected'));
-      e.target.classList.add('selected');
+      chip.classList.add('selected');
     }else{
-      e.target.classList.toggle('selected');
+      chip.classList.toggle('selected');
     }
   });
   document.getElementById('f_guardar').addEventListener('click', ()=>{
@@ -942,7 +955,8 @@ function modalNuevaClase(claseId, presetDate){
       const repetir = Math.max(1, Number(document.getElementById('f_repetir')?.value)||1);
       for(let i=0;i<repetir;i++){
         const fechaClase = i===0 ? fecha : addDias(fecha, i*7);
-        const estadoInicial = fechaClase < todayISO() ? 'completada' : 'programada';
+        const horaParaComparar = i===0 ? horaInicio : '00:00';
+        const estadoInicial = fechaHoraYaPaso(fechaClase, horaParaComparar) ? 'completada' : 'programada';
         state.clases.push({ id:uid(), estado:estadoInicial, ...data, fecha:fechaClase });
       }
     }
@@ -1294,7 +1308,7 @@ function viewClientes(){
         <span class="badge ${claseCssEstadoCliente(c.estado)}">${labelEstadoCliente(c.estado)}</span>
       </div>
       <div class="row" style="margin-top:6px;">
-        <span class="muted">${perrosResumen(c)? '🐾 '+perrosResumen(c) : 'Sin perros registrados'}</span>
+        ${(c.perros&&c.perros.length)? perrosConFotoHTML(c,20) : '<span class="muted">Sin perros registrados</span>'}
         <span class="${saldoClass}" style="font-size:13px;">${saldoLabel}</span>
       </div>
     </div>`;
@@ -1838,7 +1852,10 @@ function viewPagos(){
       <div class="swipe-actions" data-swipe-del="${p.id}">Eliminar</div>
       <div class="swipe-content card" data-swipe-id="${p.id}" style="margin-bottom:0;">
         <div class="row"><span class="tap" data-open-cliente="${p.clienteId}" style="text-decoration:underline;text-decoration-color:var(--line);">${clienteNombre(p.clienteId)}</span><strong>${fmtMoney(p.monto)}</strong></div>
-        <div class="muted">${fmtDate(p.fecha)} · ${p.metodo}${p.concepto?' · '+p.concepto:''}</div>
+        <div class="row" style="margin-top:2px;">
+          <span class="muted">${fmtDate(p.fecha)} · ${p.metodo}${p.concepto?' · '+p.concepto:''}</span>
+          <button class="btn ghost small" data-editar-pago="${p.id}" style="flex-shrink:0;">Editar / Recibo</button>
+        </div>
       </div>
     </div>`).join('') : '<div class="empty">No hay pagos registrados este mes.</div>'}
   `;
@@ -1865,6 +1882,7 @@ function modalNuevoPago(pagoId, preClienteId){
     <input type="text" id="p_concepto" value="${p?p.concepto||'':''}" placeholder="Ej: paquete de 4 clases">
     <div class="actions">
       <button class="btn block" id="p_guardar">${p?'Guardar cambios':'Registrar pago'}</button>
+      ${p?'<button class="btn secondary block" id="p_recibo">Generar recibo (PDF)</button>':''}
       ${p?'<button class="btn secondary block" id="p_borrar">Eliminar pago</button>':''}
     </div>
   `);
@@ -1884,9 +1902,19 @@ function modalNuevoPago(pagoId, preClienteId){
       metodo: document.querySelector('#p_metodo .chip.selected')?.dataset.val||'efectivo',
       concepto: document.getElementById('p_concepto').value.trim(),
     };
-    if(p){ Object.assign(p, data); } else { state.pagos.push({id:uid(), ...data}); }
-    saveState(); closeModal(); render(); toast(p?'Pago actualizado':'Pago registrado');
+    if(p){
+      Object.assign(p, data);
+      saveState(); closeModal(); render(); toast('Pago actualizado');
+    }else{
+      const nuevoPago = {id:uid(), ...data};
+      state.pagos.push(nuevoPago);
+      saveState(); toast('Pago registrado');
+      modalNuevoPago(nuevoPago.id);
+      render();
+    }
   });
+  const reciboBtn = document.getElementById('p_recibo');
+  if(reciboBtn) reciboBtn.addEventListener('click', ()=> generarPdfRecibo(p.id));
   if(p){
     document.getElementById('p_borrar').addEventListener('click', ()=>{
       if(confirm('¿Eliminar este pago?')){
@@ -1895,6 +1923,25 @@ function modalNuevoPago(pagoId, preClienteId){
       }
     });
   }
+}
+function generarPdfRecibo(pagoId){
+  const p = state.pagos.find(x=>x.id===pagoId);
+  if(!p) return;
+  const c = state.clientes.find(x=>x.id===p.clienteId);
+  const subtitulo = `${c?c.nombre:'Cliente'} · ${fmtDateLong(p.fecha)}`;
+  const ctx = nuevoPdfConTitulo('Recibo de pago', subtitulo);
+  if(!ctx) return;
+  pdfCajaDestacada(ctx, `Monto recibido: ${fmtMoney(p.monto)}`, PDF_COLORES.greenOkSoft, PDF_COLORES.greenOk);
+  ctx.y += 8;
+  pdfSeccionTitulo(ctx, 'Detalles del pago');
+  pdfParrafo(ctx, `Cliente: ${c?c.nombre:'—'}${c&&c.coDueno?' & '+c.coDueno:''}`);
+  pdfParrafo(ctx, `Fecha: ${fmtDateLong(p.fecha)}`);
+  pdfParrafo(ctx, `Método de pago: ${p.metodo==='efectivo'?'Efectivo':'Transferencia'}`);
+  if(p.concepto) pdfParrafo(ctx, `Concepto: ${p.concepto}`);
+  const nombreArchivo = `recibo-pago-${c?c.nombre.replace(/\s+/g,'-'):'cliente'}-${p.fecha}.pdf`;
+  descargarPdfDoc(ctx.doc, nombreArchivo);
+  if(c) guardarDocumentoCliente(c.id, nombreArchivo, 'Recibo de pago', ctx.doc);
+  toast('Recibo generado y guardado en Documentos');
 }
 
 /* ================= MÁS ================= */
@@ -2180,6 +2227,9 @@ function attachViewHandlers(){
   });
   document.querySelectorAll('[data-open-cliente]').forEach(el=>{
     el.addEventListener('click', ()=>modalFichaCliente(el.dataset.openCliente));
+  });
+  document.querySelectorAll('[data-editar-pago]').forEach(el=>{
+    el.addEventListener('click', ()=>modalNuevoPago(el.dataset.editarPago));
   });
   document.querySelectorAll('[data-cal-nav]').forEach(el=>{
     el.addEventListener('click', ()=>{ agendaMonth = shiftMonth(agendaMonth, Number(el.dataset.calNav)); render(); });
