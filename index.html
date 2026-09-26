@@ -282,6 +282,11 @@
   .cal-cell .dot{width:5px;height:5px;border-radius:50%;background:var(--brass);}
   .cal-cell.selected .dot{background:#fff;}
   .perro-card{background:var(--surface-2);border-radius:var(--radius-sm);padding:10px 12px;margin-bottom:8px;}
+  .acc-item{border-bottom:1px solid var(--line);}
+  .acc-header{display:flex;justify-content:space-between;align-items:center;padding:13px 2px;cursor:pointer;}
+  .acc-header h3{margin:0;font-size:14px;color:var(--ink);}
+  .acc-body{overflow:hidden;max-height:0;transition:max-height .25s ease;}
+  .acc-body.open{max-height:2400px;padding-bottom:14px;}
   .swipe-wrap{position:relative;overflow:hidden;border-radius:var(--radius);margin-bottom:10px;}
   .swipe-actions{position:absolute;top:0;right:0;bottom:0;width:84px;display:flex;align-items:center;justify-content:center;background:var(--brick);color:#fff;font-size:13px;font-weight:600;cursor:pointer;}
   .swipe-content{position:relative;background:var(--surface);transition:transform .18s ease;touch-action:pan-y;}
@@ -359,11 +364,41 @@ const RAZAS_DEFECTO = [
 const HABILIDADES_DEFECTO = [
   'Sentado','Quieto','Llamado','Caminar sin jalar','Acostado','No saltar sobre personas'
 ];
+const PROMPT_GEMINI_DEFECTO = `Eres un asistente experto de un adiestrador canino profesional. Tu único trabajo es convertir la narración de una clase (transcripción de voz o notas) en un resumen claro, amable y profesional para enviar al dueño del perro.
+
+Reglas:
+- Tono cercano, positivo y profesional (español latinoamericano).
+- Sé concreto y útil. No uses relleno ni frases genéricas.
+- No inventes información que no esté en la transcripción.
+- Si falta algún dato, omítelo o indica que no se mencionó.
+- Estructura SIEMPRE la respuesta exactamente así (respeta los títulos):
+
+**Resumen de la clase**
+- Fecha: [fecha]
+- Perro: [nombre del perro]
+- Dueño: [nombre del dueño]
+
+**Lo que trabajamos hoy**
+- (viñetas claras de los ejercicios o temas)
+
+**Cómo respondió [nombre del perro]**
+- (2 a 4 frases sobre comportamiento, avances y dificultades)
+
+**Tareas para casa**
+- (lista concreta y accionable)
+
+**Observaciones adicionales**
+- (solo si hay algo importante; si no, omite esta sección)
+
+**Próximos pasos**
+- (recomendación breve de qué seguir trabajando)
+
+No agregues saludos, despedidas ni texto fuera de esta estructura.`;
 const ETIQUETAS_DEFECTO = [
   'Reactivo','Cachorro','Miedoso','No sociable con perros','Ansioso','Ladra mucho'
 ];
-const APP_VERSION = '1.19';
-const CAMBIOS_VERSION = 'Fotos de perro visibles en Clientes, Agenda y al elegir cliente en una clase nueva. Al crear una clase ahora se compara con la hora exacta del celular (no solo la fecha) para marcarla completada automaticamente. Cada pago tiene boton Editar/Recibo para generar un PDF de comprobante, guardado en Documentos del cliente.';
+const APP_VERSION = '1.20';
+const CAMBIOS_VERSION = 'Se conserva la posicion de scroll al cambiar de pestana en el historial del cliente. Prompt de Gemini editable en Mas. Al cerrar una clase abierta desde la ficha de un cliente, vuelve al cliente en la misma posicion (no a la lista). Los bonos ahora tienen valor total y admiten pago parcial, reflejado en el saldo del cliente; los pagos de bono muestran etiqueta Bono y se puede generar Factura de cualquier pago o bono. Mas se reorganizo en acordeon alfabetico con Recordatorios fijo arriba.';
 function migrarDatos(){
   if(!state.config) state.config = {fontSize:'md', darkMode:false};
   if(!state.config.razas) state.config.razas = [...RAZAS_DEFECTO];
@@ -380,7 +415,13 @@ function migrarDatos(){
     });
     if(!c.estado) c.estado = (c.activo===false) ? 'terminado' : 'en_proceso';
     if(!c.bonos) c.bonos = [];
+    c.bonos.forEach(b=>{
+      if(b.valorTotal===undefined) b.valorTotal = b.monto||0;
+    });
     if(!c.documentos) c.documentos = [];
+  });
+  state.pagos.forEach(p=>{
+    if(p.esBono===undefined) p.esBono = /^Bono de /.test(p.concepto||'') || /^Abono a bono/.test(p.concepto||'');
   });
 }
 
@@ -690,6 +731,8 @@ function saldoCliente(clienteId){
     if(cl.pagadaConBono) return;
     if(cl.clienteIds.includes(clienteId)) deuda += Number(cl.precio)||0;
   });
+  const c = state.clientes.find(x=>x.id===clienteId);
+  if(c && c.bonos) c.bonos.forEach(b=>{ deuda += Number(b.valorTotal)||0; });
   state.pagos.forEach(p=>{ if(p.clienteId===clienteId) pagado += Number(p.monto)||0; });
   return deuda - pagado;
 }
@@ -1052,7 +1095,7 @@ function modalDetalleClase(claseId){
     const est = document.querySelector('[data-est].selected')?.dataset.est || cl.estado;
     cl.estado = est;
     cl.notas = document.getElementById('d_nota').value.trim();
-    saveState(); closeModal(); render(); toast('Clase actualizada');
+    saveState(); toast('Clase actualizada'); closeModal();
   });
   document.getElementById('d_editar').addEventListener('click', ()=> modalNuevaClase(claseId));
 }
@@ -1157,36 +1200,7 @@ function modalResumenClase(claseId){
           const cte = state.clientes.find(x=>x.id===cid);
           return cte ? perrosResumen(cte) : '';
         }).filter(Boolean).join(', ');
-        const sistema = `Eres un asistente experto de un adiestrador canino profesional. Tu único trabajo es convertir la narración de una clase (transcripción de voz o notas) en un resumen claro, amable y profesional para enviar al dueño del perro.
-
-Reglas:
-- Tono cercano, positivo y profesional (español latinoamericano).
-- Sé concreto y útil. No uses relleno ni frases genéricas.
-- No inventes información que no esté en la transcripción.
-- Si falta algún dato, omítelo o indica que no se mencionó.
-- Estructura SIEMPRE la respuesta exactamente así (respeta los títulos):
-
-**Resumen de la clase**
-- Fecha: [fecha]
-- Perro: [nombre del perro]
-- Dueño: [nombre del dueño]
-
-**Lo que trabajamos hoy**
-- (viñetas claras de los ejercicios o temas)
-
-**Cómo respondió [nombre del perro]**
-- (2 a 4 frases sobre comportamiento, avances y dificultades)
-
-**Tareas para casa**
-- (lista concreta y accionable)
-
-**Observaciones adicionales**
-- (solo si hay algo importante; si no, omite esta sección)
-
-**Próximos pasos**
-- (recomendación breve de qué seguir trabajando)
-
-No agregues saludos, despedidas ni texto fuera de esta estructura.`;
+        const sistema = state.config.geminiPrompt || PROMPT_GEMINI_DEFECTO;
         const prompt = `${sistema}
 
 Datos conocidos de esta clase (úsalos para completar Fecha, Perro y Dueño; no los inventes ni los cambies):
@@ -1569,9 +1583,12 @@ function modalFichaCliente(clienteId){
     </div>
     ${(c.bonos&&c.bonos.length)? c.bonos.map(b=>{
       const restantes = b.total - b.usadas;
+      const pagadoHasta = state.pagos.filter(p=>p.bonoId===b.id).reduce((s,p)=>s+Number(p.monto),0);
+      const falta = Math.max(0, (Number(b.valorTotal)||0) - pagadoHasta);
       return `<div class="perro-card">
         <div class="row"><strong>${b.usadas}/${b.total} clases usadas</strong><span class="${restantes>0?'saldo-neg':'muted'}">${restantes>0? restantes+' restantes':'Agotado'}</span></div>
-        <div class="muted">Comprado el ${fmtDate(b.fecha)} · ${fmtMoney(b.monto)}</div>
+        <div class="muted">Comprado el ${fmtDate(b.fecha)} · Pagado ${fmtMoney(pagadoHasta)} de ${fmtMoney(b.valorTotal)}</div>
+        ${falta>0? `<div class="row" style="margin-top:6px;"><span class="saldo-pos" style="font-size:12.5px;">Falta ${fmtMoney(falta)}</span><button class="btn ghost small" data-abonar-bono="${b.id}">Abonar</button></div>` : `<div class="saldo-neg" style="font-size:12.5px;margin-top:4px;">Pagado por completo</div>`}
       </div>`;
     }).join('') : '<div class="muted">Sin bonos registrados.</div>'}
     <div class="section-title">Documentos (${(c.documentos||[]).length})</div>
@@ -1682,13 +1699,22 @@ function modalFichaCliente(clienteId){
   document.getElementById('fc_editar').addEventListener('click', ()=>modalNuevoCliente(clienteId));
   document.getElementById('fc_pago').addEventListener('click', ()=>modalNuevoPago(null, clienteId));
   document.querySelectorAll('[data-open-clase-ficha]').forEach(el=>{
-    el.addEventListener('click', ()=>modalDetalleClase(el.dataset.openClaseFicha));
+    el.addEventListener('click', ()=>{
+      const idClase = el.dataset.openClaseFicha;
+      abrirModalAnidado(()=>modalFichaCliente(clienteId), ()=>modalDetalleClase(idClase));
+    });
   });
   document.querySelectorAll('[data-hist-modo]').forEach(el=>{
     el.addEventListener('click', ()=>{
       historialModo = el.dataset.histModo;
       historialPagina = 0;
+      const sheet = document.querySelector('.sheet');
+      const scrollPos = sheet ? sheet.scrollTop : 0;
       modalFichaCliente(clienteId);
+      requestAnimationFrame(()=>{
+        const nuevoSheet = document.querySelector('.sheet');
+        if(nuevoSheet) nuevoSheet.scrollTop = scrollPos;
+      });
     });
   });
   document.querySelectorAll('[data-hist-pag]').forEach(el=>{
@@ -1754,31 +1780,61 @@ function modalFichaCliente(clienteId){
   document.getElementById('fc_addbono').addEventListener('click', ()=>{
     modalNuevoBono(clienteId);
   });
+  document.querySelectorAll('[data-abonar-bono]').forEach(el=>{
+    el.addEventListener('click', ()=> modalAbonoBono(clienteId, el.dataset.abonarBono));
+  });
 }
 function modalNuevoBono(clienteId){
   const c = state.clientes.find(x=>x.id===clienteId);
   openModal('Nuevo bono de clases', `
     <label>Número de clases del bono</label>
     <input type="number" id="b_total" min="1" placeholder="Ej: 8">
-    <label>Monto pagado por el bono</label>
-    <input type="number" id="b_monto" min="0" placeholder="0">
+    <label>Valor total del bono</label>
+    <input type="number" id="b_valor" min="0" placeholder="Ej: 400000">
+    <label>Pago inicial (parcial o completo)</label>
+    <input type="number" id="b_pagoinicial" min="0" placeholder="0">
+    <div class="muted" style="margin-top:-4px;margin-bottom:8px;">Si pagan todo de una vez, pon aquí el mismo valor total. Si es parcial, el resto queda como saldo pendiente del cliente.</div>
     <label>Fecha de compra</label>
     <input type="date" id="b_fecha" value="${todayISO()}">
-    <div class="muted" style="margin-top:8px;">Esto también registra un pago por el monto indicado.</div>
     <div class="actions">
       <button class="btn block" id="b_guardar">Crear bono</button>
     </div>
   `);
   document.getElementById('b_guardar').addEventListener('click', ()=>{
     const total = Number(document.getElementById('b_total').value);
-    const monto = Number(document.getElementById('b_monto').value)||0;
+    const valorTotal = Number(document.getElementById('b_valor').value)||0;
+    const pagoInicial = Number(document.getElementById('b_pagoinicial').value)||0;
     const fecha = document.getElementById('b_fecha').value || todayISO();
     if(!total || total<1){ toast('Ingresa el número de clases del bono'); return; }
-    c.bonos.push({ id:uid(), total, usadas:0, monto, fecha });
-    if(monto>0){
-      state.pagos.push({ id:uid(), clienteId, monto, fecha, metodo:'efectivo', concepto:`Bono de ${total} clases` });
+    const bono = { id:uid(), total, usadas:0, valorTotal, fecha };
+    c.bonos.push(bono);
+    if(pagoInicial>0){
+      state.pagos.push({ id:uid(), clienteId, monto:pagoInicial, fecha, metodo:'efectivo', concepto:`Abono a bono de ${total} clases`, bonoId:bono.id, esBono:true });
     }
     saveState(); toast('Bono creado'); modalFichaCliente(clienteId); render();
+  });
+}
+function modalAbonoBono(clienteId, bonoId){
+  const c = state.clientes.find(x=>x.id===clienteId);
+  const b = c.bonos.find(x=>x.id===bonoId);
+  if(!b) return;
+  const pagadoHasta = state.pagos.filter(p=>p.bonoId===bonoId).reduce((s,p)=>s+Number(p.monto),0);
+  const falta = Math.max(0, (Number(b.valorTotal)||0) - pagadoHasta);
+  openModal('Abonar al bono', `
+    <div class="muted" style="margin-bottom:10px;">Bono de ${b.total} clases · Pagado ${fmtMoney(pagadoHasta)} de ${fmtMoney(b.valorTotal)} · Falta ${fmtMoney(falta)}</div>
+    <label>Monto a abonar</label>
+    <input type="number" id="ab_monto" min="0" value="${falta}">
+    <label>Fecha</label>
+    <input type="date" id="ab_fecha" value="${todayISO()}">
+    <div class="actions">
+      <button class="btn block" id="ab_guardar">Registrar abono</button>
+    </div>
+  `);
+  document.getElementById('ab_guardar').addEventListener('click', ()=>{
+    const monto = Number(document.getElementById('ab_monto').value);
+    if(!monto || monto<=0){ toast('Ingresa un monto válido'); return; }
+    state.pagos.push({ id:uid(), clienteId, monto, fecha: document.getElementById('ab_fecha').value||todayISO(), metodo:'efectivo', concepto:`Abono a bono de ${b.total} clases`, bonoId:b.id, esBono:true });
+    saveState(); toast('Abono registrado'); modalFichaCliente(clienteId); render();
   });
 }
 function abrirEstadoCuenta(clienteId){
@@ -1851,10 +1907,10 @@ function viewPagos(){
     <div class="swipe-wrap">
       <div class="swipe-actions" data-swipe-del="${p.id}">Eliminar</div>
       <div class="swipe-content card" data-swipe-id="${p.id}" style="margin-bottom:0;">
-        <div class="row"><span class="tap" data-open-cliente="${p.clienteId}" style="text-decoration:underline;text-decoration-color:var(--line);">${clienteNombre(p.clienteId)}</span><strong>${fmtMoney(p.monto)}</strong></div>
+        <div class="row"><span class="tap" data-open-cliente="${p.clienteId}" style="text-decoration:underline;text-decoration-color:var(--line);">${clienteNombre(p.clienteId)}</span><span style="display:flex;align-items:center;gap:6px;">${p.esBono?'<span class="badge" style="background:var(--violet-soft);color:var(--violet);">Bono</span>':''}<strong>${fmtMoney(p.monto)}</strong></span></div>
         <div class="row" style="margin-top:2px;">
           <span class="muted">${fmtDate(p.fecha)} · ${p.metodo}${p.concepto?' · '+p.concepto:''}</span>
-          <button class="btn ghost small" data-editar-pago="${p.id}" style="flex-shrink:0;">Editar / Recibo</button>
+          <button class="btn ghost small" data-editar-pago="${p.id}" style="flex-shrink:0;">Editar / Factura</button>
         </div>
       </div>
     </div>`).join('') : '<div class="empty">No hay pagos registrados este mes.</div>'}
@@ -1882,7 +1938,7 @@ function modalNuevoPago(pagoId, preClienteId){
     <input type="text" id="p_concepto" value="${p?p.concepto||'':''}" placeholder="Ej: paquete de 4 clases">
     <div class="actions">
       <button class="btn block" id="p_guardar">${p?'Guardar cambios':'Registrar pago'}</button>
-      ${p?'<button class="btn secondary block" id="p_recibo">Generar recibo (PDF)</button>':''}
+      ${p?'<button class="btn secondary block" id="p_recibo">Generar factura (PDF)</button>':''}
       ${p?'<button class="btn secondary block" id="p_borrar">Eliminar pago</button>':''}
     </div>
   `);
@@ -1928,8 +1984,9 @@ function generarPdfRecibo(pagoId){
   const p = state.pagos.find(x=>x.id===pagoId);
   if(!p) return;
   const c = state.clientes.find(x=>x.id===p.clienteId);
+  const titulo = p.esBono ? 'Factura de bono' : 'Factura de pago';
   const subtitulo = `${c?c.nombre:'Cliente'} · ${fmtDateLong(p.fecha)}`;
-  const ctx = nuevoPdfConTitulo('Recibo de pago', subtitulo);
+  const ctx = nuevoPdfConTitulo(titulo, subtitulo);
   if(!ctx) return;
   pdfCajaDestacada(ctx, `Monto recibido: ${fmtMoney(p.monto)}`, PDF_COLORES.greenOkSoft, PDF_COLORES.greenOk);
   ctx.y += 8;
@@ -1938,10 +1995,21 @@ function generarPdfRecibo(pagoId){
   pdfParrafo(ctx, `Fecha: ${fmtDateLong(p.fecha)}`);
   pdfParrafo(ctx, `Método de pago: ${p.metodo==='efectivo'?'Efectivo':'Transferencia'}`);
   if(p.concepto) pdfParrafo(ctx, `Concepto: ${p.concepto}`);
-  const nombreArchivo = `recibo-pago-${c?c.nombre.replace(/\s+/g,'-'):'cliente'}-${p.fecha}.pdf`;
+  if(p.esBono && c){
+    const bono = c.bonos.find(b=>b.id===p.bonoId);
+    if(bono){
+      const pagadoHasta = state.pagos.filter(x=>x.bonoId===bono.id).reduce((s,x)=>s+Number(x.monto),0);
+      const falta = Math.max(0, (Number(bono.valorTotal)||0) - pagadoHasta);
+      ctx.y += 6;
+      pdfSeccionTitulo(ctx, 'Estado del bono');
+      pdfParrafo(ctx, `Bono de ${bono.total} clases · Valor total ${fmtMoney(bono.valorTotal)}`);
+      pdfParrafo(ctx, `Pagado hasta la fecha: ${fmtMoney(pagadoHasta)}${falta>0?` · Falta ${fmtMoney(falta)}`:' · Pagado en su totalidad'}`);
+    }
+  }
+  const nombreArchivo = `${p.esBono?'factura-bono':'factura-pago'}-${c?c.nombre.replace(/\s+/g,'-'):'cliente'}-${p.fecha}.pdf`;
   descargarPdfDoc(ctx.doc, nombreArchivo);
-  if(c) guardarDocumentoCliente(c.id, nombreArchivo, 'Recibo de pago', ctx.doc);
-  toast('Recibo generado y guardado en Documentos');
+  if(c) guardarDocumentoCliente(c.id, nombreArchivo, p.esBono?'Factura de bono':'Factura de pago', ctx.doc);
+  toast('Factura generada y guardada en Documentos');
 }
 
 /* ================= MÁS ================= */
@@ -1951,6 +2019,7 @@ let statsYear = todayISO().slice(0,4);
 let statsRangeStart = todayISO().slice(0,7);
 let statsRangeEnd = todayISO().slice(0,7);
 function shiftYear(y, delta){ return String(Number(y)+delta); }
+let masAcordeonAbierto = null;
 function viewMas(){
   const rec = [...state.recordatorios].sort((a,b)=>(a.fecha+a.hora).localeCompare(b.fecha+b.hora));
 
@@ -1980,35 +2049,8 @@ function viewMas(){
   const enProceso = state.clientes.filter(c=>c.estado==='en_proceso').length;
   const cfg = state.config;
 
-  return `
-  <div class="section-title">Estadísticas</div>
-  <div class="segmented">
-    <button data-statsmode="mensual" class="${statsMode==='mensual'?'active':''}">Mes</button>
-    <button data-statsmode="anual" class="${statsMode==='anual'?'active':''}">Año</button>
-    <button data-statsmode="rango" class="${statsMode==='rango'?'active':''}">Rango</button>
-    <button data-statsmode="historico" class="${statsMode==='historico'?'active':''}">Todo</button>
-  </div>
-  ${statsMode==='mensual'||statsMode==='anual' ? `
-  <div class="cal-nav">
-    <button data-stats-nav="-1">‹</button>
-    <h3>${periodoLabel}</h3>
-    <button data-stats-nav="1">›</button>
-  </div>` : ''}
-  ${statsMode==='rango' ? `
-  <div class="field-row" style="margin-bottom:10px;">
-    <div><label style="margin-top:0;">Desde</label><input type="month" id="stats_rango_ini" value="${statsRangeStart}"></div>
-    <div><label style="margin-top:0;">Hasta</label><input type="month" id="stats_rango_fin" value="${statsRangeEnd}"></div>
-  </div>
-  <div class="muted" style="margin-bottom:10px;">${periodoLabel}</div>` : ''}
-  ${statsMode==='historico' ? `<div class="muted" style="margin-bottom:10px;">Suma de todos los datos guardados desde que empezaste a usar la app.</div>` : ''}
-  <div class="stat-grid">
-    <div class="card"><div class="stat-num">${completadasP}</div><div class="stat-label">Clases completadas</div></div>
-    <div class="card"><div class="stat-num">${canceladasP}</div><div class="stat-label">Clases canceladas</div></div>
-    <div class="card"><div class="stat-num">${fmtMoney(ingresosP)}</div><div class="stat-label">Ingresos</div></div>
-    <div class="card"><div class="stat-num">${enProceso}</div><div class="stat-label">Clientes en proceso (actual)</div></div>
-  </div>
-
-  <div class="row" style="margin-top:22px;">
+  const htmlRecordatorios = `
+  <div class="row">
     <div class="section-title" style="margin:0;">Recordatorios</div>
     <button class="btn small" id="m_addRec">+ Agregar</button>
   </div>
@@ -2020,20 +2062,15 @@ function viewMas(){
       </div>
       <div class="muted">${fmtDate(r.fecha)}${r.hora?' · '+r.hora:''}</div>
     </div>`).join('') : '<div class="muted">Sin recordatorios pendientes.</div>'}
+  `;
 
-  <div class="section-title" style="margin-top:22px;">Razas de perros</div>
+  const htmlActualizaciones = `
   <div class="card">
-    <p class="muted" style="margin:0 0 10px;">Aparecen como opciones al registrar el perro de un cliente.</p>
-    <div class="chip-row" id="razas_list">
-      ${[...state.config.razas].sort((a,b)=>a.localeCompare(b)).map(r=>`<span class="chip" data-raza-del="${r}">${r} ✕</span>`).join('')}
-    </div>
-    <div class="field-row" style="margin-top:10px;">
-      <input type="text" id="raza_nueva" placeholder="Nueva raza">
-      <button class="btn small" id="raza_add" style="flex:0 0 auto;">Agregar</button>
-    </div>
-  </div>
+    <p class="muted" style="margin:0 0 12px;">Revisa si hay una versión más nueva publicada y actualiza la app sin perder tus datos.</p>
+    <button class="btn secondary small" id="m_checkUpdate">Buscar actualización</button>
+  </div>`;
 
-  <div class="section-title" style="margin-top:22px;">Apariencia</div>
+  const htmlApariencia = `
   <div class="card">
     <label style="margin-top:0;">Tamaño de letra</label>
     <div class="chip-row" id="cfg_fontsize">
@@ -2046,9 +2083,9 @@ function viewMas(){
       <span class="chip ${!cfg.darkMode?'selected':''}" data-val="light">Claro</span>
       <span class="chip ${cfg.darkMode?'selected':''}" data-val="dark">Oscuro</span>
     </div>
-  </div>
+  </div>`;
 
-  <div class="section-title" style="margin-top:22px;">Copia de seguridad</div>
+  const htmlBackup = `
   ${(()=>{
     const ultimo = state.config.ultimoRespaldo;
     const snooze = state.config.respaldoSnoozeHasta;
@@ -2075,9 +2112,48 @@ function viewMas(){
     </div>
     <input type="file" id="m_importFile" accept="application/json" style="display:none;">
   </div>
-  ${state.config.ultimoRespaldo? `<div class="muted" style="text-align:center;margin-top:8px;">Última copia: ${fmtDate(state.config.ultimoRespaldo)}</div>`:''}
+  ${state.config.ultimoRespaldo? `<div class="muted" style="text-align:center;margin-top:8px;">Última copia: ${fmtDate(state.config.ultimoRespaldo)}</div>`:''}`;
 
-  <div class="section-title" style="margin-top:22px;">Resumen de clases por IA (Gemini)</div>
+  const htmlStats = `
+  <div class="segmented">
+    <button data-statsmode="mensual" class="${statsMode==='mensual'?'active':''}">Mes</button>
+    <button data-statsmode="anual" class="${statsMode==='anual'?'active':''}">Año</button>
+    <button data-statsmode="rango" class="${statsMode==='rango'?'active':''}">Rango</button>
+    <button data-statsmode="historico" class="${statsMode==='historico'?'active':''}">Todo</button>
+  </div>
+  ${statsMode==='mensual'||statsMode==='anual' ? `
+  <div class="cal-nav">
+    <button data-stats-nav="-1">‹</button>
+    <h3>${periodoLabel}</h3>
+    <button data-stats-nav="1">›</button>
+  </div>` : ''}
+  ${statsMode==='rango' ? `
+  <div class="field-row" style="margin-bottom:10px;">
+    <div><label style="margin-top:0;">Desde</label><input type="month" id="stats_rango_ini" value="${statsRangeStart}"></div>
+    <div><label style="margin-top:0;">Hasta</label><input type="month" id="stats_rango_fin" value="${statsRangeEnd}"></div>
+  </div>
+  <div class="muted" style="margin-bottom:10px;">${periodoLabel}</div>` : ''}
+  ${statsMode==='historico' ? `<div class="muted" style="margin-bottom:10px;">Suma de todos los datos guardados desde que empezaste a usar la app.</div>` : ''}
+  <div class="stat-grid">
+    <div class="card"><div class="stat-num">${completadasP}</div><div class="stat-label">Clases completadas</div></div>
+    <div class="card"><div class="stat-num">${canceladasP}</div><div class="stat-label">Clases canceladas</div></div>
+    <div class="card"><div class="stat-num">${fmtMoney(ingresosP)}</div><div class="stat-label">Ingresos</div></div>
+    <div class="card"><div class="stat-num">${enProceso}</div><div class="stat-label">Clientes en proceso (actual)</div></div>
+  </div>`;
+
+  const htmlRazas = `
+  <div class="card">
+    <p class="muted" style="margin:0 0 10px;">Aparecen como opciones al registrar el perro de un cliente.</p>
+    <div class="chip-row" id="razas_list">
+      ${[...state.config.razas].sort((a,b)=>a.localeCompare(b)).map(r=>`<span class="chip" data-raza-del="${r}">${r} ✕</span>`).join('')}
+    </div>
+    <div class="field-row" style="margin-top:10px;">
+      <input type="text" id="raza_nueva" placeholder="Nueva raza">
+      <button class="btn small" id="raza_add" style="flex:0 0 auto;">Agregar</button>
+    </div>
+  </div>`;
+
+  const htmlGemini = `
   <div class="card">
     <p class="muted" style="margin:0 0 10px;">Para generar resúmenes automáticos de tus notas de voz, pega tu propia clave de la API de Gemini. Se guarda solo en este celular, nunca se sube a GitHub ni a ningún servidor.</p>
     <label style="margin-top:0;">Tu clave de API de Gemini</label>
@@ -2087,12 +2163,34 @@ function viewMas(){
       ${state.config.geminiApiKey? '<button class="btn secondary small" id="cfg_geminikey_borrar">Quitar clave</button>':''}
     </div>
     <p class="muted" style="margin:10px 0 0;">Consíguela gratis en <strong>aistudio.google.com</strong> (Google AI Studio → Get API key). Sin esta clave, igual puedes grabar y transcribir tus notas por voz, solo que no se generará el resumen automático.</p>
-  </div>
+    <label style="margin-top:16px;">Instrucciones que recibe la IA para hacer el resumen</label>
+    <textarea id="cfg_geminiprompt" rows="8" style="font-size:12px;">${state.config.geminiPrompt || PROMPT_GEMINI_DEFECTO}</textarea>
+    <div class="actions" style="margin-top:10px;">
+      <button class="btn small" id="cfg_geminiprompt_guardar">Guardar instrucciones</button>
+      <button class="btn secondary small" id="cfg_geminiprompt_reset">Restaurar original</button>
+    </div>
+  </div>`;
 
-  <div class="section-title" style="margin-top:22px;">Actualizaciones</div>
-  <div class="card">
-    <p class="muted" style="margin:0 0 12px;">Revisa si hay una versión más nueva publicada y actualiza la app sin perder tus datos.</p>
-    <button class="btn secondary small" id="m_checkUpdate">Buscar actualización</button>
+  const secciones = [
+    {id:'actualizaciones', titulo:'Actualizaciones', html: htmlActualizaciones},
+    {id:'apariencia', titulo:'Apariencia', html: htmlApariencia},
+    {id:'backup', titulo:'Copia de seguridad', html: htmlBackup},
+    {id:'stats', titulo:'Estadísticas', html: htmlStats},
+    {id:'razas', titulo:'Razas de perros', html: htmlRazas},
+    {id:'gemini', titulo:'Resumen de clases por IA (Gemini)', html: htmlGemini},
+  ];
+
+  return `
+  ${htmlRecordatorios}
+  <div style="margin-top:22px;">
+  ${secciones.map(s=>`
+    <div class="acc-item">
+      <div class="acc-header" data-acc-toggle="${s.id}">
+        <h3>${s.titulo}</h3>
+        <span class="acc-chevron" style="display:inline-block;transition:transform .2s;transform:rotate(${masAcordeonAbierto===s.id?'180':'0'}deg);">⌄</span>
+      </div>
+      <div class="acc-body ${masAcordeonAbierto===s.id?'open':''}">${s.html}</div>
+    </div>`).join('')}
   </div>
   <div class="muted" style="text-align:center;margin-top:18px;">Adiestra · versión ${APP_VERSION}</div>
   `;
@@ -2126,6 +2224,7 @@ function modalNuevoRecordatorio(){
 /* ---------- Modal genérico ---------- */
 let modalHistoryPushed = false;
 let awayFromAgenda = false;
+let modalStack = [];
 function openModal(title, bodyHTML){
   document.getElementById('modalRoot').innerHTML = `
     <div class="overlay" id="overlay">
@@ -2141,12 +2240,19 @@ function openModal(title, bodyHTML){
     modalHistoryPushed = true;
   }
 }
+function abrirModalAnidado(renderModalActual, abrirNuevoModal){
+  const sheet = document.querySelector('.sheet');
+  const scrollTop = sheet ? sheet.scrollTop : 0;
+  modalStack.push({ render: renderModalActual, scrollTop });
+  history.pushState({tab:currentTab, modal:true, anidado:true}, '');
+  abrirNuevoModal();
+}
 function closeModalUI(){
   document.getElementById('modalRoot').innerHTML = '';
   modalHistoryPushed = false;
 }
 function closeModal(){
-  if(modalHistoryPushed){ history.back(); }
+  if(modalStack.length > 0 || modalHistoryPushed){ history.back(); }
   else { closeModalUI(); }
 }
 function goToTab(tab){
@@ -2161,6 +2267,15 @@ function goToTab(tab){
 }
 window.addEventListener('popstate', (e)=>{
   const s = e.state || {tab:'agenda'};
+  if(modalStack.length > 0){
+    const anterior = modalStack.pop();
+    anterior.render();
+    requestAnimationFrame(()=>{
+      const sheet = document.querySelector('.sheet');
+      if(sheet) sheet.scrollTop = anterior.scrollTop;
+    });
+    return;
+  }
   const modalRoot = document.getElementById('modalRoot');
   if(modalRoot && modalRoot.innerHTML.trim() !== ''){
     closeModalUI();
@@ -2307,6 +2422,13 @@ function attachViewHandlers(){
   });
   const addRec = document.getElementById('m_addRec');
   if(addRec) addRec.addEventListener('click', modalNuevoRecordatorio);
+  document.querySelectorAll('[data-acc-toggle]').forEach(el=>{
+    el.addEventListener('click', ()=>{
+      const id = el.dataset.accToggle;
+      masAcordeonAbierto = (masAcordeonAbierto===id) ? null : id;
+      render();
+    });
+  });
 
   const cfgFs = document.getElementById('cfg_fontsize');
   if(cfgFs) cfgFs.addEventListener('click', e=>{
@@ -2357,6 +2479,20 @@ function attachViewHandlers(){
     delete state.config.geminiApiKey;
     saveState(); render();
     toast('Clave eliminada');
+  });
+  const geminiPromptGuardar = document.getElementById('cfg_geminiprompt_guardar');
+  if(geminiPromptGuardar) geminiPromptGuardar.addEventListener('click', ()=>{
+    const val = document.getElementById('cfg_geminiprompt').value.trim();
+    if(!val){ toast('Las instrucciones no pueden quedar vacías'); return; }
+    state.config.geminiPrompt = val;
+    saveState();
+    toast('Instrucciones guardadas');
+  });
+  const geminiPromptReset = document.getElementById('cfg_geminiprompt_reset');
+  if(geminiPromptReset) geminiPromptReset.addEventListener('click', ()=>{
+    delete state.config.geminiPrompt;
+    saveState(); render();
+    toast('Se restauraron las instrucciones originales');
   });
   const imp = document.getElementById('m_import');
   const impFile = document.getElementById('m_importFile');
