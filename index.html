@@ -397,8 +397,8 @@ No agregues saludos, despedidas ni texto fuera de esta estructura.`;
 const ETIQUETAS_DEFECTO = [
   'Reactivo','Cachorro','Miedoso','No sociable con perros','Ansioso','Ladra mucho'
 ];
-const APP_VERSION = '1.20';
-const CAMBIOS_VERSION = 'Se conserva la posicion de scroll al cambiar de pestana en el historial del cliente. Prompt de Gemini editable en Mas. Al cerrar una clase abierta desde la ficha de un cliente, vuelve al cliente en la misma posicion (no a la lista). Los bonos ahora tienen valor total y admiten pago parcial, reflejado en el saldo del cliente; los pagos de bono muestran etiqueta Bono y se puede generar Factura de cualquier pago o bono. Mas se reorganizo en acordeon alfabetico con Recordatorios fijo arriba.';
+const APP_VERSION = '1.21';
+const CAMBIOS_VERSION = 'Correccion de bugs tras auditoria de codigo: la grabacion de voz ya no queda corriendo en segundo plano si cierras el modal sin tocar Detener; se quito un parpadeo visual al cerrar varios modales; el historial de un cliente se reinicia a hoy al abrir la ficha de otro cliente distinto; se elimino codigo muerto sin usar.';
 function migrarDatos(){
   if(!state.config) state.config = {fontSize:'md', darkMode:false};
   if(!state.config.razas) state.config.razas = [...RAZAS_DEFECTO];
@@ -780,13 +780,6 @@ function daysInMonthArr(ym){
   for(let d=1; d<=numDays; d++) cells.push(y+'-'+pad(m)+'-'+pad(d));
   return cells;
 }
-function weeksInMonth(ym){
-  const cells = daysInMonthArr(ym);
-  while(cells.length % 7 !== 0) cells.push(null);
-  const weeks = [];
-  for(let i=0;i<cells.length;i+=7) weeks.push(cells.slice(i,i+7));
-  return weeks;
-}
 function diasDeLaSemana(iso){
   const d = new Date(iso+'T00:00:00');
   const offset = (d.getDay()+6)%7;
@@ -1004,13 +997,13 @@ function modalNuevaClase(claseId, presetDate){
       }
     }
     agendaSelDay = fecha; agendaMonth = fecha.slice(0,7);
-    saveState(); closeModal(); render(); toast(cl?'Clase actualizada':(document.getElementById('f_repetir')&&Number(document.getElementById('f_repetir').value)>1 ? 'Clases agendadas' : 'Clase agendada'));
+    saveState(); toast(cl?'Clase actualizada':(document.getElementById('f_repetir')&&Number(document.getElementById('f_repetir').value)>1 ? 'Clases agendadas' : 'Clase agendada')); closeModal();
   });
   if(cl){
     document.getElementById('f_borrar').addEventListener('click', ()=>{
       const claseEliminada = {...cl};
       state.clases = state.clases.filter(c=>c.id!==cl.id);
-      saveState(); closeModal(); render();
+      saveState(); closeModal();
       mostrarUndo('Clase eliminada', ()=>{
         state.clases.push(claseEliminada);
         saveState(); render();
@@ -1102,6 +1095,14 @@ function modalDetalleClase(claseId){
 
 /* ================= RESUMEN DE VOZ PARA EL CLIENTE ================= */
 let reconocimientoVoz = null;
+let grabacionEnCurso = { activa:false };
+function detenerGrabacionSiActiva(){
+  grabacionEnCurso.activa = false;
+  if(reconocimientoVoz){
+    try{ reconocimientoVoz.stop(); }catch(e){}
+    reconocimientoVoz = null;
+  }
+}
 function modalResumenClase(claseId){
   const cl = state.clases.find(c=>c.id===claseId);
   if(!cl) return;
@@ -1144,9 +1145,9 @@ function modalResumenClase(claseId){
   });
 
   const grabarBtn = document.getElementById('rc_grabar');
-  let grabandoActivo = false;
   function iniciarSesionReconocimiento(){
     const textarea = document.getElementById('rc_texto');
+    if(!textarea){ grabacionEnCurso.activa = false; return; }
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     reconocimientoVoz = new SR();
     reconocimientoVoz.lang = 'es-CO';
@@ -1154,21 +1155,24 @@ function modalResumenClase(claseId){
     reconocimientoVoz.interimResults = true;
     const baseAlIniciar = textarea.value ? textarea.value.trim()+' ' : '';
     reconocimientoVoz.onresult = (e)=>{
+      const ta = document.getElementById('rc_texto');
+      if(!ta) return;
       let finalTexto = '', interim = '';
       for(let i=0; i<e.results.length; i++){
         if(e.results[i].isFinal) finalTexto += e.results[i][0].transcript;
         else interim += e.results[i][0].transcript;
       }
-      textarea.value = baseAlIniciar + finalTexto + (interim? ' '+interim : '');
+      ta.value = baseAlIniciar + finalTexto + (interim? ' '+interim : '');
     };
     reconocimientoVoz.onerror = (e)=>{
       if(e.error!=='no-speech' && e.error!=='aborted') toast('No se pudo escuchar: '+e.error);
     };
     reconocimientoVoz.onend = ()=>{
-      if(grabandoActivo){
+      if(grabacionEnCurso.activa && document.getElementById('rc_texto')){
         iniciarSesionReconocimiento();
       }else{
-        grabarBtn.textContent = '🎙️ Grabar';
+        grabacionEnCurso.activa = false;
+        if(grabarBtn) grabarBtn.textContent = '🎙️ Grabar';
         reconocimientoVoz = null;
       }
     };
@@ -1176,12 +1180,12 @@ function modalResumenClase(claseId){
   }
   if(grabarBtn){
     grabarBtn.addEventListener('click', ()=>{
-      if(grabandoActivo){
-        grabandoActivo = false;
-        if(reconocimientoVoz) reconocimientoVoz.stop();
+      if(grabacionEnCurso.activa){
+        detenerGrabacionSiActiva();
+        grabarBtn.textContent = '🎙️ Grabar';
         return;
       }
-      grabandoActivo = true;
+      grabacionEnCurso.activa = true;
       grabarBtn.textContent = '⏹ Detener';
       toast('Escuchando...');
       iniciarSesionReconocimiento();
@@ -1398,7 +1402,7 @@ function modalNuevoCliente(clienteId){
     };
     if(c){
       Object.assign(c, data);
-      saveState(); closeModal(); render(); toast('Cliente actualizado');
+      saveState(); toast('Cliente actualizado'); closeModal();
     }else{
       const nuevo = { id:uid(), fechaAlta:todayISO(), perros:[], ...data };
       state.clientes.push(nuevo);
@@ -1557,6 +1561,14 @@ function modalPerro(clienteId, perroId){
 function modalFichaCliente(clienteId){
   const c = state.clientes.find(x=>x.id===clienteId);
   if(!c) return;
+  if(historialClienteActual !== clienteId){
+    historialClienteActual = clienteId;
+    historialModo = 'todo';
+    historialPagina = 0;
+    historialMes = todayISO().slice(0,7);
+    historialCalMes = todayISO().slice(0,7);
+    historialCalSelDay = todayISO();
+  }
   const clases = state.clases.filter(cl=>cl.clienteIds.includes(clienteId)).sort((a,b)=>b.fecha.localeCompare(a.fecha));
   const pagos = state.pagos.filter(p=>p.clienteId===clienteId).sort((a,b)=>b.fecha.localeCompare(a.fecha));
   const saldo = saldoCliente(clienteId);
@@ -1882,6 +1894,7 @@ let historialPagina = 0;
 let historialMes = todayISO().slice(0,7);
 let historialCalMes = todayISO().slice(0,7);
 let historialCalSelDay = todayISO();
+let historialClienteActual = null;
 function viewPagos(){
   const ingresosMes = state.pagos.filter(p=>p.fecha.slice(0,7)===pagosMonth).reduce((s,p)=>s+Number(p.monto),0);
   const pagosDelMes = state.pagos.filter(p=>p.fecha.slice(0,7)===pagosMonth).sort((a,b)=>b.fecha.localeCompare(a.fecha));
@@ -1960,7 +1973,7 @@ function modalNuevoPago(pagoId, preClienteId){
     };
     if(p){
       Object.assign(p, data);
-      saveState(); closeModal(); render(); toast('Pago actualizado');
+      saveState(); toast('Pago actualizado'); closeModal();
     }else{
       const nuevoPago = {id:uid(), ...data};
       state.pagos.push(nuevoPago);
@@ -1975,7 +1988,7 @@ function modalNuevoPago(pagoId, preClienteId){
     document.getElementById('p_borrar').addEventListener('click', ()=>{
       if(confirm('¿Eliminar este pago?')){
         state.pagos = state.pagos.filter(x=>x.id!==p.id);
-        saveState(); closeModal(); render(); toast('Pago eliminado');
+        saveState(); toast('Pago eliminado'); closeModal();
       }
     });
   }
@@ -2217,7 +2230,7 @@ function modalNuevoRecordatorio(){
       hora: document.getElementById('r_hora').value,
       completado:false
     });
-    saveState(); closeModal(); render(); toast('Recordatorio creado');
+    saveState(); toast('Recordatorio creado'); closeModal();
   });
 }
 
@@ -2248,6 +2261,7 @@ function abrirModalAnidado(renderModalActual, abrirNuevoModal){
   abrirNuevoModal();
 }
 function closeModalUI(){
+  if(grabacionEnCurso.activa) detenerGrabacionSiActiva();
   document.getElementById('modalRoot').innerHTML = '';
   modalHistoryPushed = false;
 }
