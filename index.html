@@ -397,8 +397,8 @@ No agregues saludos, despedidas ni texto fuera de esta estructura.`;
 const ETIQUETAS_DEFECTO = [
   'Reactivo','Cachorro','Miedoso','No sociable con perros','Ansioso','Ladra mucho'
 ];
-const APP_VERSION = '1.21';
-const CAMBIOS_VERSION = 'Correccion de bugs tras auditoria de codigo: la grabacion de voz ya no queda corriendo en segundo plano si cierras el modal sin tocar Detener; se quito un parpadeo visual al cerrar varios modales; el historial de un cliente se reinicia a hoy al abrir la ficha de otro cliente distinto; se elimino codigo muerto sin usar.';
+const APP_VERSION = '1.22';
+const CAMBIOS_VERSION = 'Nuevas notificaciones funcionales: puedes activarlas por cada clase (con minutos de anticipacion) y por cada recordatorio con hora, desde Mas o desde el formulario. Es mejor esfuerzo: funcionan mientras la app este abierta o reciente en segundo plano, no como una alarma nativa garantizada.';
 function migrarDatos(){
   if(!state.config) state.config = {fontSize:'md', darkMode:false};
   if(!state.config.razas) state.config.razas = [...RAZAS_DEFECTO];
@@ -423,6 +423,68 @@ function migrarDatos(){
   state.pagos.forEach(p=>{
     if(p.esBono===undefined) p.esBono = /^Bono de /.test(p.concepto||'') || /^Abono a bono/.test(p.concepto||'');
   });
+  state.clases.forEach(cl=>{
+    if(cl.notificar===undefined) cl.notificar = false;
+    if(cl.notificarMinutosAntes===undefined) cl.notificarMinutosAntes = 30;
+    if(cl.notificado===undefined) cl.notificado = false;
+  });
+  state.recordatorios.forEach(r=>{
+    if(r.notificar===undefined) r.notificar = false;
+    if(r.notificado===undefined) r.notificado = false;
+  });
+}
+
+/* ---------- Notificaciones ---------- */
+function notificacionesSoportadas(){
+  return 'Notification' in window;
+}
+async function pedirPermisoNotificaciones(){
+  if(!notificacionesSoportadas()){ toast('Este navegador no soporta notificaciones'); return false; }
+  if(Notification.permission==='granted') return true;
+  if(Notification.permission==='denied'){ toast('Bloqueaste las notificaciones. Actívalas desde los ajustes del navegador.'); return false; }
+  const resultado = await Notification.requestPermission();
+  return resultado==='granted';
+}
+async function dispararNotificacion(titulo, cuerpo, tag){
+  try{
+    if('serviceWorker' in navigator){
+      const reg = await navigator.serviceWorker.getRegistration();
+      if(reg && reg.showNotification){
+        await reg.showNotification(titulo, { body:cuerpo, tag, icon:'icon-192.png', badge:'icon-192.png' });
+        return;
+      }
+    }
+    new Notification(titulo, { body:cuerpo, tag, icon:'icon-192.png' });
+  }catch(e){ /* silencioso: si falla, no interrumpimos la app */ }
+}
+function momentoAvisoClase(fecha, horaInicio, minutosAntes){
+  return new Date(`${fecha}T${horaInicio}:00`).getTime() - (Number(minutosAntes)||0)*60000;
+}
+function revisarNotificacionesPendientes(){
+  if(!notificacionesSoportadas() || Notification.permission!=='granted') return;
+  const ahora = Date.now();
+  let huboCambios = false;
+  state.clases.forEach(cl=>{
+    if(!cl.notificar || cl.notificado || cl.estado==='cancelada') return;
+    const momentoClase = new Date(`${cl.fecha}T${cl.horaInicio}:00`).getTime();
+    const momentoAviso = momentoClase - (Number(cl.notificarMinutosAntes)||0)*60000;
+    if(ahora >= momentoAviso){
+      const nombres = cl.clienteIds.map(clienteNombre).join(', ');
+      dispararNotificacion('Clase próxima', `${nombres} · ${cl.horaInicio}`, 'clase-'+cl.id);
+      cl.notificado = true;
+      huboCambios = true;
+    }
+  });
+  state.recordatorios.forEach(r=>{
+    if(!r.notificar || r.notificado || r.completado || !r.hora) return;
+    const momento = new Date(`${r.fecha}T${r.hora}:00`).getTime();
+    if(ahora >= momento){
+      dispararNotificacion('Recordatorio', r.texto, 'rec-'+r.id);
+      r.notificado = true;
+      huboCambios = true;
+    }
+  });
+  if(huboCambios) saveState();
 }
 
 /* ---------- Utilidades ---------- */
@@ -944,12 +1006,28 @@ function modalNuevaClase(claseId, presetDate){
       <div><input type="number" id="f_repetir" min="1" max="52" value="1"></div>
       <div class="muted" style="align-self:center;">semanas en total (1 = no repetir)</div>
     </div>` : ''}
+    <label class="checkboxline" style="margin-top:12px;">
+      <input type="checkbox" id="f_notificar" ${cl&&cl.notificar?'checked':''}> <span>Notificarme antes de esta clase</span>
+    </label>
+    <select id="f_notif_min" style="margin-top:4px;">
+      <option value="0" ${cl&&cl.notificarMinutosAntes===0?'selected':''}>A la hora exacta</option>
+      <option value="15" ${cl&&cl.notificarMinutosAntes===15?'selected':''}>15 minutos antes</option>
+      <option value="30" ${(!cl||cl.notificarMinutosAntes===30||cl.notificarMinutosAntes===undefined)?'selected':''}>30 minutos antes</option>
+      <option value="60" ${cl&&cl.notificarMinutosAntes===60?'selected':''}>1 hora antes</option>
+      <option value="1440" ${cl&&cl.notificarMinutosAntes===1440?'selected':''}>1 día antes</option>
+    </select>
     <div class="actions">
       <button class="btn block" id="f_guardar">${cl?'Guardar cambios':'Agendar clase'}</button>
       ${cl? '<button class="btn secondary block" id="f_borrar">Eliminar clase</button>':''}
     </div>
   `);
 
+  document.getElementById('f_notificar').addEventListener('change', async (e)=>{
+    if(e.target.checked){
+      const ok = await pedirPermisoNotificaciones();
+      if(!ok){ e.target.checked = false; }
+    }
+  });
   document.getElementById('f_tipo').addEventListener('click', e=>{
     if(e.target.classList.contains('chip')){
       document.querySelectorAll('#f_tipo .chip').forEach(c=>c.classList.remove('selected'));
@@ -979,21 +1057,28 @@ function modalNuevaClase(claseId, presetDate){
     const clienteIds = [...document.querySelectorAll('#f_clientes .chip.selected')].map(c=>c.dataset.val);
     if(clienteIds.length===0){ toast('Selecciona al menos un cliente'); return; }
     if(tipo==='individual' && clienteIds.length>1){ toast('Una clase individual solo puede tener un cliente'); return; }
+    const notificar = document.getElementById('f_notificar').checked;
+    const minutosAntes = Number(document.getElementById('f_notif_min').value)||0;
     const data = {
       fecha, horaInicio,
       horaFin: readTimeSelect('f_fin'),
       tipo, clienteIds,
       precio: Number(document.getElementById('f_precio').value)||0,
       notas: document.getElementById('f_notas').value.trim(),
+      notificar,
+      notificarMinutosAntes: minutosAntes,
     };
-    if(cl){ Object.assign(cl, data); }
-    else{
+    if(cl){
+      Object.assign(cl, data);
+      cl.notificado = notificar ? (momentoAvisoClase(cl.fecha, cl.horaInicio, minutosAntes) <= Date.now()) : false;
+    }else{
       const repetir = Math.max(1, Number(document.getElementById('f_repetir')?.value)||1);
       for(let i=0;i<repetir;i++){
         const fechaClase = i===0 ? fecha : addDias(fecha, i*7);
         const horaParaComparar = i===0 ? horaInicio : '00:00';
         const estadoInicial = fechaHoraYaPaso(fechaClase, horaParaComparar) ? 'completada' : 'programada';
-        state.clases.push({ id:uid(), estado:estadoInicial, ...data, fecha:fechaClase });
+        const yaPasoAviso = notificar ? (momentoAvisoClase(fechaClase, horaInicio, minutosAntes) <= Date.now()) : false;
+        state.clases.push({ id:uid(), estado:estadoInicial, ...data, fecha:fechaClase, notificado:yaPasoAviso });
       }
     }
     agendaSelDay = fecha; agendaMonth = fecha.slice(0,7);
@@ -2166,6 +2251,16 @@ function viewMas(){
     </div>
   </div>`;
 
+  const permisoNotif = notificacionesSoportadas() ? Notification.permission : 'no-soportado';
+  const htmlNotificaciones = `
+  <div class="card">
+    <p class="muted" style="margin:0 0 10px;">Estado del permiso: <strong>${permisoNotif==='granted'?'Activadas ✓':(permisoNotif==='denied'?'Bloqueadas':(permisoNotif==='no-soportado'?'No soportadas en este navegador':'Sin activar todavía'))}</strong></p>
+    ${permisoNotif==='default' ? '<button class="btn small" id="notif_pedir">Activar notificaciones</button>' : ''}
+    ${permisoNotif==='denied' ? '<p class="muted" style="margin:6px 0 0;">Para volver a activarlas, entra a los ajustes de Chrome/Android → Notificaciones y permite las de esta app.</p>' : ''}
+    ${permisoNotif==='granted' ? '<button class="btn secondary small" id="notif_probar">Enviar notificación de prueba</button>' : ''}
+    <p class="muted" style="margin:12px 0 0;">Cómo funcionan: al crear una clase o un recordatorio (con hora), puedes marcar la opción "Notificarme". La aviso aparece cuando llega la hora <strong>mientras la app esté abierta o recientemente en segundo plano</strong>. Si Android cierra la app para ahorrar batería, la notificación puede llegar tarde (apenas la vuelvas a abrir) o no llegar — no es una alarma nativa garantizada. Para mejor resultado, en los ajustes de Android desactiva la optimización de batería para esta app.</p>
+  </div>`;
+
   const htmlGemini = `
   <div class="card">
     <p class="muted" style="margin:0 0 10px;">Para generar resúmenes automáticos de tus notas de voz, pega tu propia clave de la API de Gemini. Se guarda solo en este celular, nunca se sube a GitHub ni a ningún servidor.</p>
@@ -2189,6 +2284,7 @@ function viewMas(){
     {id:'apariencia', titulo:'Apariencia', html: htmlApariencia},
     {id:'backup', titulo:'Copia de seguridad', html: htmlBackup},
     {id:'stats', titulo:'Estadísticas', html: htmlStats},
+    {id:'notificaciones', titulo:'Notificaciones', html: htmlNotificaciones},
     {id:'razas', titulo:'Razas de perros', html: htmlRazas},
     {id:'gemini', titulo:'Resumen de clases por IA (Gemini)', html: htmlGemini},
   ];
@@ -2215,22 +2311,38 @@ function modalNuevoRecordatorio(){
     <input type="text" id="r_texto" placeholder="Ej: Llamar a María para confirmar clase">
     <div class="field-row">
       <div><label>Fecha</label><input type="date" id="r_fecha" value="${todayISO()}"></div>
-      <div><label>Hora (opcional)</label><input type="time" id="r_hora"></div>
+      <div><label>Hora (opcional)</label>${timeSelectHTML('r_hora','',false)}</div>
     </div>
+    <label class="checkboxline" style="margin-top:12px;">
+      <input type="checkbox" id="r_notificar"> <span>Notificarme a esta hora</span>
+    </label>
+    <div class="muted" style="margin-top:2px;">Necesita que elijas una hora. Se pedirá permiso de notificaciones si aún no lo has dado.</div>
     <div class="actions">
       <button class="btn block" id="r_guardar">Guardar recordatorio</button>
     </div>
   `);
+  document.getElementById('r_notificar').addEventListener('change', async (e)=>{
+    if(e.target.checked){
+      const ok = await pedirPermisoNotificaciones();
+      if(!ok){ e.target.checked = false; }
+    }
+  });
   document.getElementById('r_guardar').addEventListener('click', ()=>{
     const texto = document.getElementById('r_texto').value.trim();
     if(!texto){ toast('Escribe el recordatorio'); return; }
+    const hora = readTimeSelect('r_hora');
+    const notificar = document.getElementById('r_notificar').checked;
+    if(notificar && !hora){ toast('Elige una hora para poder notificarte'); return; }
     state.recordatorios.push({
       id:uid(), texto,
       fecha: document.getElementById('r_fecha').value || todayISO(),
-      hora: document.getElementById('r_hora').value,
-      completado:false
+      hora,
+      completado:false,
+      notificar,
+      notificado:false
     });
     saveState(); toast('Recordatorio creado'); closeModal();
+    revisarNotificacionesPendientes();
   });
 }
 
@@ -2480,6 +2592,17 @@ function attachViewHandlers(){
     saveState(); render();
     toast('Te lo recordamos en 3 días');
   });
+  const notifPedir = document.getElementById('notif_pedir');
+  if(notifPedir) notifPedir.addEventListener('click', async ()=>{
+    const ok = await pedirPermisoNotificaciones();
+    if(ok) toast('Notificaciones activadas');
+    render();
+  });
+  const notifProbar = document.getElementById('notif_probar');
+  if(notifProbar) notifProbar.addEventListener('click', ()=>{
+    dispararNotificacion('Adiestra', 'Las notificaciones funcionan correctamente 🐾', 'prueba');
+    toast('Notificación enviada');
+  });
   const geminiGuardar = document.getElementById('cfg_geminikey_guardar');
   if(geminiGuardar) geminiGuardar.addEventListener('click', ()=>{
     const val = document.getElementById('cfg_geminikey').value.trim();
@@ -2581,6 +2704,11 @@ history.replaceState({tab:'agenda'}, '');
 migrarDatos();
 applyConfig();
 render();
+revisarNotificacionesPendientes();
+setInterval(revisarNotificacionesPendientes, 60000);
+document.addEventListener('visibilitychange', ()=>{
+  if(document.visibilityState==='visible') revisarNotificacionesPendientes();
+});
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
